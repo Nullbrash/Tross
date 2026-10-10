@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tross</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 48rem; margin: 2rem auto; padding: 0 1rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #8884; }
+    .up { color: #2a8a3a; } .down { color: #c0392b; } .degraded, .restricted { color: #c58a00; }
+  </style>
+</head>
+<body>
+  <h1>Tross</h1>
+  <p>Веб-интерфейс появится на этапе 8. Пока — состояние каналов из <code>/api/links</code>.</p>
+  <table>
+    <thead><tr><th>Канал</th><th>Состояние</th><th>RTT, мс</th><th>Джиттер, мс</th><th>Потери</th></tr></thead>
+    <tbody id="links"><tr><td colspan="5">загрузка…</td></tr></tbody>
+  </table>
+  <script>
+    async function refresh() {
+      const body = document.getElementById('links');
+      try {
+        const r = await fetch('/api/links', { cache: 'no-store' });
+        const { links } = await r.json();
+        body.replaceChildren(...links.map(l => {
+          const tr = document.createElement('tr');
+          const cells = [l.name, l.state, l.rtt_ms.toFixed(1), l.jitter_ms.toFixed(1), (l.loss * 100).toFixed(1) + '%'];
+          for (const [i, v] of cells.entries()) {
+            const td = document.createElement('td');
+            td.textContent = v;
+            if (i === 1) td.className = l.state;
+            tr.append(td);
+          }
+          return tr;
+        }));
+      } catch (e) {
+        body.innerHTML = '<tr><td colspan="5">нет связи с демоном</td></tr>';
+      }
+    }
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>

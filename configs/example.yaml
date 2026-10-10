@@ -1,0 +1,197 @@
+# Пример конфигурации trossd.
+# Поля, которые можно опустить, помечены «по умолчанию: …».
+# Неизвестное поле — ошибка (защита от опечаток).
+
+daemon:
+  # «Сухой» режим: ничего не менять в системе, монитор и dataplane — фейковые.
+  # На Этапе 0 поддерживается только он.
+  dry_run: true
+  data_dir: /var/lib/tross          # по умолчанию: /var/lib/tross
+
+log:
+  level: info                       # debug | info | warn | error
+  format: text                      # text | json
+  ring_size: 5000                   # свежие записи в памяти (SSD не трогаем)
+
+api:
+  # В рабочей установке — адрес мини-ПК в LAN, например 192.168.10.1:8080.
+  listen: 127.0.0.1:8080
+  # Откуда разрешён доступ. По умолчанию: 127.0.0.0/8 + lan.networks.
+  # allowed_networks: [127.0.0.0/8, 192.168.10.0/24]
+
+lan:
+  interface: enp1s0
+  networks: [192.168.10.0/24]
+
+# Каналы. table и fwmark по умолчанию выводятся из порядка:
+# 1-й канал — таблица 101, метка 0x100; 2-й — 102 и 0x200; и т.д.
+links:
+  - id: isp1
+    name: Провайдер 1 (GPON)
+    kind: wired                     # wired | lte
+    interface: enp2s0
+    gateway: auto                   # auto (из DHCP) или IPv4 шлюза
+    priority: 10                    # меньше — предпочтительнее при равенстве
+    sqm:
+      enabled: true
+      down_mbit: 0                  # 0 — брать из измерений, тарифу не доверяем
+      up_mbit: 0
+
+  - id: isp2
+    name: Провайдер 2
+    kind: wired
+    interface: enp3s0
+    gateway: auto
+    priority: 20
+    sqm: { enabled: true }
+
+  - id: lte
+    name: LTE
+    kind: lte
+    interface: enp4s0
+    gateway: 192.168.8.1
+    priority: 100
+    # metered: true                 # по умолчанию true для lte
+    quota: { monthly_gb: 50, reset_day: 1 }
+    whitelist_detection: true       # распознавать режим «белых списков» оператора
+    probe_targets: [77.88.8.8, 1.1.1.1]
+    sqm: { enabled: true }
+
+monitor:
+  targets: [1.1.1.1, 8.8.8.8, 77.88.8.8]
+  interval: 2s
+  timeout: 1s
+  window: 30                        # проб в окне расчёта задержки/джиттера/потерь
+  fail_after: 3                     # гистерезис: плохих окон подряд до down
+  recover_after: 10                 # хороших подряд до возврата в up
+  throughput_interval: 6h           # реальное измерение скорости
+
+# Классы трафика и их политики.
+#   selector:   lowest_latency | best_throughput | balanced | ordered
+#   stickiness: none | session | destination  (+ sticky_ttl)
+#   links:      основной пул (пусто — все, кроме fallback)
+#   fallback:   только когда весь основной пул непригоден
+#   канал вне links и fallback при непустом links для класса запрещён
+#   method:     auto (по спискам доменов) | direct | direct_dpi | proxy
+#   priority:   high | normal | low
+classes:
+  - id: gaming
+    name: Игры
+    selector: lowest_latency
+    stickiness: session
+    sticky_ttl: 2h
+    links: [isp1, isp2]
+    fallback: [lte]
+    method: direct
+    allow_proxy: false
+    priority: high
+
+  - id: voip
+    name: Звонки
+    selector: lowest_latency
+    stickiness: session
+    sticky_ttl: 2h
+    links: [isp1, isp2]
+    fallback: [lte]
+    method: auto
+    allow_proxy: false
+    priority: high
+
+  - id: streaming
+    name: Видео
+    selector: best_throughput
+    links: [isp1, isp2]
+    fallback: [lte]
+    method: auto
+    allow_proxy: true
+    priority: normal
+
+  - id: bulk
+    name: Фоновые загрузки
+    selector: balanced
+    links: [isp1, isp2]             # LTE нет ни здесь, ни в fallback — никогда через LTE
+    method: direct
+    priority: low
+
+  - id: ip_sensitive
+    name: Чувствительные к смене IP
+    selector: ordered
+    stickiness: destination
+    sticky_ttl: 24h
+    links: [isp1, isp2]
+    fallback: [lte]
+    method: auto
+    allow_proxy: false
+    priority: normal
+
+  - id: default
+    name: Прочее
+    selector: balanced
+    links: [isp1, isp2]
+    fallback: [lte]
+    method: auto
+    allow_proxy: true
+    priority: normal
+
+dns:
+  listen: ["192.168.10.1:53"]
+  upstreams:                        # по умолчанию: cloudflare, google (DoH), quad9 (DoT)
+    - { name: cloudflare, url: "https://cloudflare-dns.com/dns-query" }
+    - { name: google,     url: "https://dns.google/dns-query" }
+    - { name: quad9,      url: "tls://dns.quad9.net" }
+  bootstrap: [1.1.1.1, 8.8.8.8]     # для разрешения имён самих DoH/DoT-серверов
+  cache_size: 10000
+  set_ttl: { min: 5m, max: 12h }    # пределы таймаута IP в множествах nftables
+  firefox_canary_nxdomain: true     # NXDOMAIN на use-application-dns.net
+  watchdog: { interval: 5s, failures: 3 }
+
+# Онлайн-списки — нижний слой (ниже ручных и выученных правил).
+# purpose: bypass — кандидаты на обход (метод определит проверка);
+#          class  — домены класса трафика (тогда нужен class).
+# URL — ориентиры, сверить перед этапом 4.
+lists:
+  update_interval: 24h
+  sources:
+    - id: itdog-inside
+      url: https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst
+      format: text
+    - id: antifilter-community
+      url: https://community.antifilter.download/list/domains.lst
+      format: text
+    - id: refilter
+      url: https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst
+      format: text
+    - id: v2fly-streaming
+      url: https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+      format: geosite
+      categories: [youtube, twitch]
+      purpose: class
+      class: streaming
+      interval: 168h
+    - id: metacubex-youtube
+      url: https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geosite/youtube.mrs
+      format: mrs
+      purpose: class
+      class: streaming
+
+dpi:
+  enabled: false
+  nfqws: /opt/zapret/nfq/nfqws
+  queue_base: 200                   # очередь канала = queue_base + номер канала
+  recheck_interval: 24h
+  probe_domains: [rutracker.org, youtube.com]
+
+proxy:
+  enabled: false
+  engine: mihomo
+  binary: /usr/local/lib/tross/mihomo
+  version: v1.19.32                 # зафиксированная версия; иная — не запускаем
+  # work_dir: /var/lib/tross/mihomo # по умолчанию: <data_dir>/mihomo
+  controller: 127.0.0.1:9090        # только loopback
+  tproxy_port_base: 7900            # прокси N слушает tproxy_port_base + N
+  routing_mark_base: 0x10000        # метки прокси — выше меток каналов
+  # Ключи и подписки добавляются через интерфейс и хранятся в БД.
+
+devices:
+  notify_new: true
+  default_dns_mode: observe         # observe | redirect | block | exempt

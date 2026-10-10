@@ -1,0 +1,333 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/netip"
+	"net/url"
+	"regexp"
+	"slices"
+
+	"tross/core/lists"
+	"tross/core/model"
+)
+
+// Идентификаторы каналов и классов входят в имена объектов nftables и метрик —
+// поэтому только строчные латинские буквы, цифры, '_' и '-'.
+var (
+	linkIDRe   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,14}$`)
+	classIDRe  = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	sourceIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+)
+
+// zapretMark — метка, которую nfqws ставит на свои пакеты по умолчанию.
+const zapretMark uint32 = 0x40000000
+
+type problems []error
+
+func (p *problems) add(field, format string, args ...any) {
+	*p = append(*p, fmt.Errorf("%s: %s", field, fmt.Sprintf(format, args...)))
+}
+
+// Validate проверяет конфигурацию после применения значений по умолчанию
+// и возвращает все найденные ошибки разом.
+func (c *Config) Validate() error {
+	var p problems
+	c.validateLog(&p)
+	c.validateAPI(&p)
+	c.validateLAN(&p)
+	c.validateLinks(&p)
+	c.validateMonitor(&p)
+	c.validateClasses(&p)
+	c.validateDNS(&p)
+	c.validateLists(&p)
+	c.validateDPI(&p)
+	c.validateProxy(&p)
+	if !c.Devices.DefaultDNSMode.Valid() {
+		p.add("devices.default_dns_mode", "invalid mode %q", c.Devices.DefaultDNSMode)
+	}
+	return errors.Join(p...)
+}
+
+func (c *Config) validateLog(p *problems) {
+	var lvl slog.Level
+	if err := lvl.UnmarshalText([]byte(c.Log.Level)); err != nil {
+		p.add("log.level", "%v", err)
+	}
+	if c.Log.Format != "text" && c.Log.Format != "json" {
+		p.add("log.format", "want text or json, got %q", c.Log.Format)
+	}
+	if c.Log.RingSize < 1 {
+		p.add("log.ring_size", "must be positive")
+	}
+}
+
+func (c *Config) validateAPI(p *problems) {
+	if _, _, err := net.SplitHostPort(c.API.Listen); err != nil {
+		p.add("api.listen", "%v", err)
+	}
+	for _, n := range c.API.AllowedNetworks {
+		if !n.IsValid() {
+			p.add("api.allowed_networks", "invalid prefix")
+		}
+	}
+}
+
+func (c *Config) validateLAN(p *problems) {
+	if c.LAN.Interface == "" {
+		p.add("lan.interface", "required")
+	}
+	if len(c.LAN.Networks) == 0 {
+		p.add("lan.networks", "at least one network is required")
+	}
+	for _, n := range c.LAN.Networks {
+		if !n.Addr().Is4() {
+			p.add("lan.networks", "%s: only IPv4 is supported", n)
+		}
+	}
+}
+
+func (c *Config) validateLinks(p *problems) {
+	if len(c.Links) == 0 {
+		*p = append(*p, errNoLinks)
+		return
+	}
+	ids := map[model.LinkID]bool{}
+	ifaces := map[string]bool{}
+	tables := map[int]bool{}
+	marks := map[uint32]bool{}
+	for i, l := range c.Links {
+		f := fmt.Sprintf("links[%d]", i)
+		if !linkIDRe.MatchString(string(l.ID)) {
+			p.add(f+".id", "%q: want [a-z0-9][a-z0-9_-]{0,14}", l.ID)
+		}
+		if ids[l.ID] {
+			p.add(f+".id", "duplicate %q", l.ID)
+		}
+		ids[l.ID] = true
+		if !l.Kind.Valid() {
+			p.add(f+".kind", "want wired or lte, got %q", l.Kind)
+		}
+		switch {
+		case l.Interface == "":
+			p.add(f+".interface", "required")
+		case l.Interface == c.LAN.Interface:
+			p.add(f+".interface", "%q is the LAN interface", l.Interface)
+		case ifaces[l.Interface]:
+			p.add(f+".interface", "duplicate %q", l.Interface)
+		}
+		ifaces[l.Interface] = true
+		if l.Gateway != "auto" {
+			if a, err := netip.ParseAddr(l.Gateway); err != nil || !a.Is4() {
+				p.add(f+".gateway", "want \"auto\" or IPv4 address, got %q", l.Gateway)
+			}
+		}
+		// 253–255 — системные таблицы default/main/local.
+		if l.Table <= 0 || l.Table >= 253 && l.Table <= 255 {
+			p.add(f+".table", "%d is reserved or invalid", l.Table)
+		}
+		if tables[l.Table] {
+			p.add(f+".table", "duplicate %d", l.Table)
+		}
+		tables[l.Table] = true
+		if l.FwMark == 0 || l.FwMark&^LinkMarkMask != 0 {
+			p.add(f+".fwmark", "%#x must be non-zero and fit mask %#x", l.FwMark, LinkMarkMask)
+		}
+		if marks[l.FwMark] {
+			p.add(f+".fwmark", "duplicate %#x", l.FwMark)
+		}
+		marks[l.FwMark] = true
+		for _, a := range l.ProbeTargets {
+			if !a.Is4() {
+				p.add(f+".probe_targets", "%s: only IPv4 is supported", a)
+			}
+		}
+		if l.SQM.DownMbit < 0 || l.SQM.UpMbit < 0 {
+			p.add(f+".sqm", "bandwidth must not be negative")
+		}
+		if q := l.Quota; q != nil {
+			if q.MonthlyGB <= 0 {
+				p.add(f+".quota.monthly_gb", "must be positive")
+			}
+			if q.ResetDay < 1 || q.ResetDay > 28 {
+				p.add(f+".quota.reset_day", "want 1..28, got %d", q.ResetDay)
+			}
+		}
+	}
+}
+
+func (c *Config) validateMonitor(p *problems) {
+	m := c.Monitor
+	for _, a := range m.Targets {
+		if !a.Is4() {
+			p.add("monitor.targets", "%s: only IPv4 is supported", a)
+		}
+	}
+	if m.Interval <= 0 {
+		p.add("monitor.interval", "must be positive")
+	}
+	if m.Timeout <= 0 || m.Timeout > m.Interval {
+		p.add("monitor.timeout", "must be positive and not exceed interval")
+	}
+	if m.Window < 1 || m.FailAfter < 1 || m.RecoverAfter < 1 {
+		p.add("monitor", "window, fail_after and recover_after must be >= 1")
+	}
+	if m.ThroughputInterval <= 0 {
+		p.add("monitor.throughput_interval", "must be positive")
+	}
+}
+
+func (c *Config) linkExists(id model.LinkID) bool {
+	return slices.ContainsFunc(c.Links, func(l Link) bool { return l.ID == id })
+}
+
+func (c *Config) classExists(id model.TrafficClass) bool {
+	return slices.ContainsFunc(c.Classes, func(cl Class) bool { return cl.ID == id })
+}
+
+func (c *Config) validateClasses(p *problems) {
+	seen := map[model.TrafficClass]bool{}
+	for i, cl := range c.Classes {
+		f := fmt.Sprintf("classes[%d]", i)
+		if !classIDRe.MatchString(string(cl.ID)) {
+			p.add(f+".id", "%q: want [a-z0-9][a-z0-9_-]{0,31}", cl.ID)
+		}
+		if seen[cl.ID] {
+			p.add(f+".id", "duplicate %q", cl.ID)
+		}
+		seen[cl.ID] = true
+		if err := cl.Policy.Validate(); err != nil {
+			p.add(f, "%v", err)
+		}
+		for _, id := range slices.Concat(cl.Links, cl.Fallback) {
+			if !c.linkExists(id) {
+				p.add(f, "unknown link %q", id)
+			}
+		}
+	}
+	if !seen[model.ClassDefault] {
+		p.add("classes", "class %q is required", model.ClassDefault)
+	}
+}
+
+func (c *Config) validateDNS(p *problems) {
+	d := c.DNS
+	if len(d.Listen) == 0 {
+		p.add("dns.listen", "at least one address is required")
+	}
+	for _, l := range d.Listen {
+		if _, _, err := net.SplitHostPort(l); err != nil {
+			p.add("dns.listen", "%v", err)
+		}
+	}
+	for i, u := range d.Upstreams {
+		pu, err := url.Parse(u.URL)
+		if err != nil || pu.Host == "" || pu.Scheme != "https" && pu.Scheme != "tls" {
+			p.add(fmt.Sprintf("dns.upstreams[%d].url", i), "want https://host/path (DoH) or tls://host (DoT), got %q", u.URL)
+		}
+	}
+	for _, a := range d.Bootstrap {
+		if !a.Is4() {
+			p.add("dns.bootstrap", "%s: only IPv4 is supported", a)
+		}
+	}
+	if d.CacheSize < 0 {
+		p.add("dns.cache_size", "must not be negative")
+	}
+	if d.SetTTL.Min <= 0 || d.SetTTL.Max < d.SetTTL.Min {
+		p.add("dns.set_ttl", "want 0 < min <= max")
+	}
+	if d.Watchdog.Interval <= 0 || d.Watchdog.Failures < 1 {
+		p.add("dns.watchdog", "interval must be positive and failures >= 1")
+	}
+}
+
+func (c *Config) validateLists(p *problems) {
+	if c.Lists.UpdateInterval <= 0 {
+		p.add("lists.update_interval", "must be positive")
+	}
+	seen := map[string]bool{}
+	for i, s := range c.Lists.Sources {
+		f := fmt.Sprintf("lists.sources[%d]", i)
+		if !sourceIDRe.MatchString(s.ID) {
+			p.add(f+".id", "%q: want [a-z0-9][a-z0-9_.-]{0,63}", s.ID)
+		}
+		if seen[s.ID] {
+			p.add(f+".id", "duplicate %q", s.ID)
+		}
+		seen[s.ID] = true
+		if u, err := url.Parse(s.URL); err != nil || u.Host == "" || u.Scheme != "https" && u.Scheme != "http" {
+			p.add(f+".url", "want http(s) URL, got %q", s.URL)
+		}
+		if !s.Format.Valid() {
+			p.add(f+".format", "want text, geosite or mrs, got %q", s.Format)
+		}
+		if s.Format == lists.FormatGeosite && len(s.Categories) == 0 {
+			p.add(f+".categories", "required for geosite format")
+		}
+		switch s.Purpose {
+		case lists.PurposeBypass:
+			if s.Class != "" {
+				p.add(f+".class", "only allowed with purpose class")
+			}
+		case lists.PurposeClass:
+			if !c.classExists(s.Class) {
+				p.add(f+".class", "unknown class %q", s.Class)
+			}
+		default:
+			p.add(f+".purpose", "want bypass or class, got %q", s.Purpose)
+		}
+		if s.Interval < 0 {
+			p.add(f+".interval", "must not be negative")
+		}
+	}
+}
+
+func (c *Config) validateDPI(p *problems) {
+	d := c.DPI
+	if !d.Enabled {
+		return
+	}
+	if d.NFQWS == "" {
+		p.add("dpi.nfqws", "required when dpi is enabled")
+	}
+	if int(d.QueueBase)+len(c.Links) > 65536 {
+		p.add("dpi.queue_base", "queues for all links must fit 0..65535")
+	}
+	if d.RecheckInterval <= 0 {
+		p.add("dpi.recheck_interval", "must be positive")
+	}
+	for _, dom := range d.ProbeDomains {
+		if n, err := model.NormalizeDomain(dom); err != nil || n != dom {
+			p.add("dpi.probe_domains", "%q is not a normalized domain", dom)
+		}
+	}
+}
+
+func (c *Config) validateProxy(p *problems) {
+	x := c.Proxy
+	if x.Engine != "mihomo" {
+		p.add("proxy.engine", "only mihomo is supported, got %q", x.Engine)
+	}
+	// API ядра даёт управление соединениями — наружу его не открываем.
+	host, _, err := net.SplitHostPort(x.Controller)
+	if a, perr := netip.ParseAddr(host); err != nil || perr != nil || !a.IsLoopback() {
+		p.add("proxy.controller", "must be a loopback address with port, got %q", x.Controller)
+	}
+	if x.Enabled {
+		if x.Binary == "" {
+			p.add("proxy.binary", "required when proxy is enabled")
+		}
+		if x.Version == "" {
+			p.add("proxy.version", "pin the expected core version")
+		}
+	}
+	if x.TProxyPortBase < 1024 {
+		p.add("proxy.tproxy_port_base", "must be >= 1024")
+	}
+	if m := x.RoutingMarkBase; m == 0 || m&LinkMarkMask != 0 || m&zapretMark != 0 {
+		p.add("proxy.routing_mark_base", "%#x must not overlap link marks %#x or zapret mark %#x", m, LinkMarkMask, zapretMark)
+	}
+}
