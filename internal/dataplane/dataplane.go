@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"time"
 
+	"tross/core/decision"
 	"tross/core/model"
 )
 
@@ -50,8 +51,10 @@ type Spec struct {
 type Dataplane interface {
 	Setup(ctx context.Context, spec Spec) error
 	Teardown(ctx context.Context) error
-	// SetLinkUsable включает или исключает канал из выбора для новых соединений.
-	SetLinkUsable(ctx context.Context, id model.LinkID, usable bool) error
+	// SetBalance задаёт распределение новых соединений из домашней сети по
+	// каналам (вес > 0); пусто — ни одного пригодного канала. Установленные
+	// соединения не переезжают.
+	SetBalance(ctx context.Context, shares []decision.LinkShare) error
 	// AddToSet кладёт адрес в множество с таймаутом (обычно — по TTL DNS-ответа).
 	AddToSet(ctx context.Context, set SetName, addr netip.Addr, ttl time.Duration) error
 	// FlushConntrack сбрасывает соединения, закреплённые за упавшим каналом.

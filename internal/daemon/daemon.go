@@ -14,6 +14,7 @@ import (
 
 	"tross/core/event"
 	"tross/core/linkhealth"
+	"tross/core/model"
 	"tross/internal/api"
 	"tross/internal/config"
 	"tross/internal/dataplane"
@@ -85,6 +86,10 @@ func Run(ctx context.Context, opts Options) error {
 
 	events, unsubscribe := bus.Subscribe(256)
 	wg.Go(func() { logEvents(log, st, events) })
+	// Подписка до запуска монитора: первые смены состояний не теряются.
+	linkEvents, unsubscribeLinks := bus.Subscribe(64, event.TopicLinkState)
+	bal := &balancer{log: log, dp: dp, mon: mon, policy: cfg.Policies()[model.ClassDefault]}
+	wg.Go(func() { bal.run(runCtx, linkEvents) })
 	wg.Go(func() {
 		if err := mon.Run(runCtx); err != nil {
 			fatal <- fmt.Errorf("link monitor: %w", err)
@@ -114,6 +119,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	cancel()
 	unsubscribe()
+	unsubscribeLinks()
 	wg.Wait()
 	log.Info("trossd stopped")
 	return runErr

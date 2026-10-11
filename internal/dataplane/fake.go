@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"tross/core/decision"
 	"tross/core/model"
 )
 
@@ -53,8 +54,8 @@ func (f *Fake) Teardown(context.Context) error {
 	return nil
 }
 
-func (f *Fake) SetLinkUsable(_ context.Context, id model.LinkID, usable bool) error {
-	f.record("set-link-usable", id, usable)
+func (f *Fake) SetBalance(_ context.Context, shares []decision.LinkShare) error {
+	f.record("set-balance", shares)
 	return nil
 }
 

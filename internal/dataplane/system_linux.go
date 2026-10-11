@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"tross/core/decision"
 	"tross/core/model"
 )
 
@@ -32,7 +34,7 @@ type System struct {
 	mu      sync.Mutex
 	spec    Spec
 	up      bool
-	usable  map[model.LinkID]bool
+	shares  []decision.LinkShare  // текущее распределение новых соединений
 	routed  map[model.LinkID]bool // маршрут по умолчанию в таблице канала поставлен
 	prevSVM string                // src_valid_mark до Setup — вернуть при Teardown
 }
@@ -88,7 +90,6 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	if err := s.addRulesLocked(); err != nil {
 		return fail(err)
 	}
-	s.usable = make(map[model.LinkID]bool, len(spec.Links))
 	s.routed = make(map[model.LinkID]bool, len(spec.Links))
 	for _, l := range spec.Links {
 		if err := s.routeLocked(l); err != nil {
@@ -96,13 +97,14 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 			continue
 		}
 		s.routed[l.Link.ID] = true
-		s.usable[l.Link.ID] = true
 	}
-	if err := runNft(ctx, renderBase(spec)+renderChoose(spec.Links, s.usable)); err != nil {
+	// До первого решения балансировщика — первый канал по приоритету.
+	s.shares = firstByPriority(spec.Links, s.routed)
+	if err := runNft(ctx, renderBase(spec)+renderChoose(spec.Links, s.shares)); err != nil {
 		return fail(err)
 	}
 	s.up = true
-	s.log.Info("dataplane: setup done", "links", len(spec.Links), "usable", len(s.usable))
+	s.log.Info("dataplane: setup done", "links", len(spec.Links), "routed", len(s.routed))
 	return nil
 }
 
@@ -239,29 +241,37 @@ func (s *System) cleanupLocked(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (s *System) SetLinkUsable(ctx context.Context, id model.LinkID, usable bool) error {
+func (s *System) SetBalance(ctx context.Context, shares []decision.LinkShare) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.up {
 		return errors.New("dataplane: not set up")
 	}
-	l, ok := s.linkLocked(id)
-	if !ok {
-		return fmt.Errorf("dataplane: unknown link %q", id)
-	}
-	if usable && !s.routed[id] {
-		if err := s.routeLocked(l); err != nil {
-			return fmt.Errorf("dataplane: link %s: %w", id, err)
+	var ok []decision.LinkShare
+	for _, sh := range shares {
+		l, known := s.linkLocked(sh.Link)
+		if !known || sh.Weight <= 0 {
+			continue
 		}
-		s.routed[id] = true
+		// Маршрута могло не быть при Setup (кабель не был вставлен).
+		if !s.routed[sh.Link] {
+			if err := s.routeLocked(l); err != nil {
+				s.log.Warn("dataplane: link still has no route, left out of balance", "link", sh.Link, "err", err)
+				continue
+			}
+			s.routed[sh.Link] = true
+		}
+		ok = append(ok, sh)
 	}
-	if s.usable[id] == usable {
+	if slices.Equal(ok, s.shares) {
 		return nil
 	}
-	s.usable[id] = usable
-	return runNft(ctx, renderChoose(s.spec.Links, s.usable))
+	if err := runNft(ctx, renderChoose(s.spec.Links, ok)); err != nil {
+		return err
+	}
+	s.shares = ok
+	return nil
 }
-
 func (s *System) linkLocked(id model.LinkID) (LinkSpec, bool) {
 	for _, l := range s.spec.Links {
 		if l.Link.ID == id {

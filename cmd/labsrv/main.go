@@ -4,6 +4,7 @@
 //	    HTTP (/, /generate_204, /success.txt, /bytes?n=, /sink), UDP-эхо,
 //	    имитация страницы авторизации (captive portal) на отдельном порту
 //	labsrv udpping -target 203.0.113.10:9000 -rate 30 -n 90
+//	labsrv upload -url http://203.0.113.10/sink -n 50000000
 //
 // UDP-пинг имитирует игровой трафик: мелкие пакеты с постоянной частотой;
 // печатает RTT (мин/сред/макс), джиттер и потери.
@@ -36,6 +37,8 @@ func main() {
 		err = serve(os.Args[2:])
 	case "udpping":
 		err = udpping(os.Args[2:])
+	case "upload":
+		err = upload(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
@@ -176,6 +179,39 @@ func udpping(args []string) error {
 		<-done
 	}
 	printStats(*count, rtts)
+	return nil
+}
+
+// upload — отдача потоком (POST /sink): печатает, сколько отправлено и чем
+// закончилось; нужна для проверки, что отдача на умершем канале обрывается.
+func upload(args []string) error {
+	fs := flag.NewFlagSet("upload", flag.ExitOnError)
+	target := fs.String("url", "", "URL of /sink")
+	n := fs.Int64("n", 50_000_000, "bytes to send")
+	timeout := fs.Duration("timeout", 60*time.Second, "overall timeout")
+	_ = fs.Parse(args)
+	if *target == "" {
+		return errors.New("need -url")
+	}
+	pr, pw := io.Pipe()
+	var sent atomic.Int64 // пишет горутина-источник, читает итоговая печать
+	go func() {
+		for sent.Load() < *n {
+			k := min(int64(len(zeros)), *n-sent.Load())
+			if _, err := pw.Write(zeros[:k]); err != nil {
+				return
+			}
+			sent.Add(k)
+		}
+		pw.Close()
+	}()
+	start := time.Now()
+	c := &http.Client{Timeout: *timeout}
+	resp, err := c.Post(*target, "application/octet-stream", pr)
+	if err == nil {
+		resp.Body.Close()
+	}
+	fmt.Printf("sent %d of %d in %.1f s: %v\n", sent.Load(), *n, time.Since(start).Seconds(), err)
 	return nil
 }
 

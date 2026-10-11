@@ -23,6 +23,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"tross/core/decision"
 	"tross/core/model"
 )
 
@@ -177,31 +178,69 @@ func TestNewConnectionsFollowUsableLinks(t *testing.T) {
 		t.Logf("measure: rtt via isp1 with dataplane rules: %s", strings.TrimSpace(out))
 	}
 
+	only := func(id model.LinkID) {
+		t.Helper()
+		var shares []decision.LinkShare
+		if id != "" {
+			shares = []decision.LinkShare{{Link: id, Weight: 1}}
+		}
+		if err := s.SetBalance(ctx, shares); err != nil {
+			t.Fatal(err)
+		}
+	}
 	start := time.Now()
-	if err := s.SetLinkUsable(ctx, "isp1", false); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("measure: SetLinkUsable took %v", time.Since(start))
+	only("isp2")
+	t.Logf("measure: SetBalance took %v", time.Since(start))
 	via("wan2")
-	if err := s.SetLinkUsable(ctx, "isp2", false); err != nil {
-		t.Fatal(err)
-	}
+	only("lte")
 	via("wan3")
-	if err := s.SetLinkUsable(ctx, "lte", false); err != nil {
-		t.Fatal(err)
-	}
+	only("")
 	// На стенде в main нет маршрута по умолчанию: без пригодных каналов связи нет.
 	if got, err := fetch(t, 1000); err == nil && got == 1000 {
 		t.Fatal("no usable links, yet the fetch succeeded")
 	}
-	if err := s.SetLinkUsable(ctx, "isp2", true); err != nil {
-		t.Fatal(err)
-	}
+	only("isp2")
 	via("wan2")
-	if err := s.SetLinkUsable(ctx, "isp1", true); err != nil {
+	only("isp1")
+	via("wan1")
+}
+
+// TestWeightedSplitAcrossDestinations — при нескольких каналах разные адреса
+// назначения расходятся по весам, а один адрес всегда идёт одним каналом.
+func TestWeightedSplitAcrossDestinations(t *testing.T) {
+	ctx := context.Background()
+	s := newSystem(t)
+	if err := s.Setup(ctx, standSpec()); err != nil {
 		t.Fatal(err)
 	}
-	via("wan1")
+	if err := s.SetBalance(ctx, []decision.LinkShare{{Link: "isp1", Weight: 1}, {Link: "isp2", Weight: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := run(t, "nft", "list", "chain", "inet", "tross", "choose"); err != nil || !strings.Contains(out, "jhash") {
+		t.Fatalf("choose chain: %v\n%s", err, out)
+	}
+	count := func() (int64, int64) { return rxBytes(t, "wan1"), rxBytes(t, "wan2") }
+	a1, a2 := count()
+	// 64 разных адреса «интернета» (203.0.113.64/26 — локальные в tl-inet).
+	if out, err := inClient(t, "for i in $(seq 64 127); do ping -c1 -W1 -s 1000 203.0.113.$i >/dev/null; done"); err != nil {
+		t.Fatalf("pings: %v %s", err, out)
+	}
+	b1, b2 := count()
+	d1, d2 := b1-a1, b2-a2
+	share := float64(d1) / float64(d1+d2)
+	t.Logf("measure: 64 destinations split wan1 %.0f%% / wan2 %.0f%%", share*100, (1-share)*100)
+	if share < 0.25 || share > 0.75 {
+		t.Errorf("equal weights split %.0f%%/%.0f%% — too uneven", share*100, (1-share)*100)
+	}
+	// Один адрес — всегда один канал.
+	c1, c2 := count()
+	if _, err := inClient(t, "for i in 1 2 3 4 5 6 7 8; do ping -c1 -W1 -s 1000 203.0.113.77 >/dev/null; done"); err != nil {
+		t.Fatal(err)
+	}
+	e1, e2 := count()
+	if (e1-c1 > 4000) == (e2-c2 > 4000) {
+		t.Errorf("one destination used both links: wan1 +%d, wan2 +%d", e1-c1, e2-c2)
+	}
 }
 
 func TestEstablishedStaysThenFlushKills(t *testing.T) {
@@ -233,7 +272,8 @@ func TestEstablishedStaysThenFlushKills(t *testing.T) {
 	}()
 	time.Sleep(3 * time.Second)
 
-	if err := s.SetLinkUsable(ctx, "isp1", false); err != nil {
+	// isp1 выведен из выбора — установленная загрузка должна остаться на нём.
+	if err := s.SetBalance(ctx, []decision.LinkShare{{Link: "isp2", Weight: 1}}); err != nil {
 		t.Fatal(err)
 	}
 	w1, w2 := rxBytes(t, "wan1"), rxBytes(t, "wan2")

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"tross/core/decision"
 	"tross/core/model"
 )
 
@@ -37,35 +38,46 @@ func TestRenderBase(t *testing.T) {
 	}
 }
 
-func TestRenderChooseByPriority(t *testing.T) {
+func TestRenderChooseSingleAndEmpty(t *testing.T) {
 	spec := testSpec()
-	all := map[model.LinkID]bool{"isp1": true, "isp2": true, "lte": true}
-	got := renderChoose(spec.Links, all)
-	// isp2 приоритетнее (10 < 20), хоть и второй в конфиге.
-	if !strings.Contains(got, "meta mark set 0x200 ct mark set meta mark") {
-		t.Fatalf("expected isp2 chosen:\n%s", got)
+	got := renderChoose(spec.Links, []decision.LinkShare{{Link: "isp2", Weight: 1}})
+	if !strings.Contains(got, "add rule inet tross choose meta mark set 0x200 ct mark set meta mark") {
+		t.Fatalf("single link:\n%s", got)
 	}
-	got = renderChoose(spec.Links, map[model.LinkID]bool{"isp1": true, "lte": true})
-	if !strings.Contains(got, "meta mark set 0x100") {
-		t.Fatalf("expected fallback to isp1:\n%s", got)
-	}
-	got = renderChoose(spec.Links, map[model.LinkID]bool{})
-	if strings.Contains(got, "add rule") || !strings.HasPrefix(got, "flush chain inet tross choose") {
-		t.Fatalf("no usable link must leave choose empty:\n%s", got)
+	for _, empty := range [][]decision.LinkShare{nil, {{Link: "isp1", Weight: 0}}, {{Link: "unknown", Weight: 5}}} {
+		got = renderChoose(spec.Links, empty)
+		if strings.Contains(got, "add rule") || !strings.HasPrefix(got, "flush chain inet tross choose") {
+			t.Fatalf("no usable link must leave choose empty (%v):\n%s", empty, got)
+		}
 	}
 }
 
-func TestRenderChooseStableOnEqualPriority(t *testing.T) {
+func TestRenderChooseWeighted(t *testing.T) {
 	spec := testSpec()
+	got := renderChoose(spec.Links, []decision.LinkShare{{Link: "isp1", Weight: 75}, {Link: "isp2", Weight: 25}, {Link: "lte", Weight: 1}})
+	want := "meta mark set jhash ip saddr . ip daddr mod 101 map { 0-74 : 0x100, 75-99 : 0x200, 100 : 0x300 } ct mark set meta mark"
+	if !strings.Contains(got, want) {
+		t.Fatalf("weighted choose:\n%s\nwant %s", got, want)
+	}
+}
+
+func TestFirstByPriority(t *testing.T) {
+	spec := testSpec()
+	routed := map[model.LinkID]bool{"isp1": true, "isp2": true, "lte": true}
+	// isp2 приоритетнее (10 < 20), хоть и второй в конфиге.
+	if got := firstByPriority(spec.Links, routed); len(got) != 1 || got[0].Link != "isp2" {
+		t.Fatalf("got %v", got)
+	}
 	for i := range spec.Links {
 		spec.Links[i].Link.Priority = 0
 	}
-	got := renderChoose(spec.Links, map[model.LinkID]bool{"isp2": true, "isp1": true})
-	if !strings.Contains(got, "0x100") {
-		t.Fatalf("equal priority must keep config order:\n%s", got)
+	if got := firstByPriority(spec.Links, map[model.LinkID]bool{"isp2": true, "isp1": true}); got[0].Link != "isp1" {
+		t.Fatalf("equal priority must keep config order: %v", got)
+	}
+	if got := firstByPriority(spec.Links, nil); got != nil {
+		t.Fatalf("nothing routed: %v", got)
 	}
 }
-
 func TestRenderAddElementAndIfname(t *testing.T) {
 	if got := renderAddElement(SetDPI, "203.0.113.5", 300); got != "add element inet tross tross_dpi4 { 203.0.113.5 timeout 300s }\n" {
 		t.Fatalf("element = %q", got)

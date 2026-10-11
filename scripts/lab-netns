@@ -67,6 +67,8 @@ cmd_up() {
 	nsx tl-inet ip link add srv type dummy
 	for a in "${PROBE_IPS[@]}" "$SRV_IP" "$DNS_IP"; do nsx tl-inet ip addr add "$a/32" dev srv; done
 	nsx tl-inet ip link set srv up
+	# Ещё 64 адреса «интернета» для проверок распределения по каналам.
+	nsx tl-inet ip route add local 203.0.113.64/26 dev srv
 
 	for l in "${LINKS[@]}"; do
 		local i=${IDX[$l]} ns; ns=$(ns_of "$l")
