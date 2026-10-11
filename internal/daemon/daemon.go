@@ -147,7 +147,7 @@ func newMonitor(cfg *config.Config, log *slog.Logger, bus event.EventBus) (linkm
 		probes = append(probes, linkmon.LinkProbe{Link: l.Model(), Mark: l.FwMark, Targets: general, Whitelist: wl})
 	}
 	return linkmon.NewSystem(linkmon.Options{
-		Log: log, Bus: bus, Interval: m.Interval, Timeout: m.Timeout, Params: params, TCPPort: m.TCPFallbackPort,
+		Log: log, Bus: bus, Interval: m.Interval, Timeout: m.Timeout, Params: params, TCPTargets: m.TCPTargets,
 		HTTPCheck: httpCheckOptions(m.HTTPCheck),
 		SpeedTest: linkmon.SpeedTestOptions{URLs: m.SpeedTest.URLs, Hour: hh, Minute: mm, Duration: m.SpeedTest.Duration, MaxBytes: m.SpeedTest.MaxBytes},
 	}, probes)
@@ -159,7 +159,7 @@ func httpCheckOptions(h config.HTTPCheck) linkmon.HTTPCheckOptions {
 	}
 	o := linkmon.HTTPCheckOptions{Interval: h.Interval, Timeout: h.Timeout, DNS: h.DNS}
 	for _, u := range h.URLs {
-		o.URLs = append(o.URLs, linkmon.HTTPCheckURL{URL: u.URL, Status: u.Status, Body: u.Body})
+		o.URLs = append(o.URLs, linkmon.HTTPCheckURL{URL: u.URL, Status: u.Status, Body: u.Body, Domestic: u.Domestic})
 	}
 	return o
 }

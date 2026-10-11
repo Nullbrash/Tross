@@ -68,7 +68,7 @@ func TestDefaults(t *testing.T) {
 	if got := len(cfg.API.AllowedNetworks); got != 2 {
 		t.Errorf("allowed networks = %d, want loopback + LAN", got)
 	}
-	if cfg.Monitor.Interval != 2*time.Second || len(cfg.DNS.Upstreams) != 3 {
+	if cfg.Monitor.Interval != 2*time.Second || len(cfg.DNS.Upstreams) != 5 || len(cfg.Monitor.TCPTargets) != 3 || len(cfg.Monitor.WhitelistTargets) != 3 {
 		t.Error("monitor/dns defaults not applied")
 	}
 	if cfg.Proxy.WorkDir != "/var/lib/tross/mihomo" {
@@ -88,9 +88,15 @@ func TestLoadLabConfig(t *testing.T) {
 	if len(g) != 2 || len(wl) != 1 || wl[0].String() != "203.0.113.3" {
 		t.Fatalf("lte targets: general %v, whitelist %v", g, wl)
 	}
+	// Распознавание белых списков по умолчанию включено у всех каналов.
 	g, wl = cfg.ProbeTargets(cfg.Links[0])
-	if len(g) != 3 || wl != nil {
-		t.Fatalf("isp1 without whitelist detection must probe all targets: %v %v", g, wl)
+	if len(g) != 2 || len(wl) != 1 {
+		t.Fatalf("isp1 targets with default whitelist detection: %v %v", g, wl)
+	}
+	off := cfg.Links[0]
+	off.WhitelistDetection = ptr(false)
+	if g, wl = cfg.ProbeTargets(off); len(g) != 3 || wl != nil {
+		t.Fatalf("detection off must probe all targets: %v %v", g, wl)
 	}
 }
 
@@ -106,9 +112,34 @@ func TestSpeedTestValidation(t *testing.T) {
 		t.Fatalf("bad time must fail, got %v", err)
 	}
 	only := minimal + "monitor: { targets: [77.88.8.8], whitelist_targets: [77.88.8.8] }\n"
-	only = strings.Replace(only, "interface: eth2 }", "interface: eth2, whitelist_detection: true }", 1)
 	if _, err := Parse([]byte(only)); err == nil || !strings.Contains(err.Error(), "no general probe targets") {
 		t.Fatalf("whitelist-only targets must fail, got %v", err)
+	}
+}
+
+func TestHTTPCheckDomesticRules(t *testing.T) {
+	bad := map[string]string{
+		"domestic over http": "monitor: { http_check: { urls: [{ url: 'http://cp.cloudflare.com/generate_204', status: 204 }, { url: 'http://ya.ru/', domestic: true }] } }\n",
+		"any-status abroad":  "monitor: { http_check: { urls: [{ url: 'https://example.com/' }] } }\n",
+		"only domestic":      "monitor: { http_check: { urls: [{ url: 'https://ya.ru/', domestic: true }] } }\n",
+	}
+	for name, y := range bad {
+		if _, err := Parse([]byte(minimal + y)); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
+	cfg, err := Parse([]byte(minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dom := 0
+	for _, u := range cfg.Monitor.HTTPCheck.URLs {
+		if u.Domestic {
+			dom++
+		}
+	}
+	if dom == 0 {
+		t.Error("defaults must include a domestic HTTPS check")
 	}
 }
 

@@ -20,12 +20,13 @@ lan:
 links:
   - { id: isp1, name: ISP 1, kind: wired, interface: wan1, gateway: 100.64.1.1, priority: 10 }
   - { id: isp2, name: ISP 2, kind: wired, interface: wan2, gateway: 100.64.2.1, priority: 20 }
-  - { id: lte,  name: LTE,   kind: lte,   interface: wan3, gateway: 100.64.3.1, priority: 100,
-      whitelist_detection: true }
+  - { id: lte,  name: LTE,   kind: lte,   interface: wan3, gateway: 100.64.3.1, priority: 100 }
 
 monitor:
   targets: [203.0.113.1, 203.0.113.2, 203.0.113.3]
   whitelist_targets: [203.0.113.3]
+  # На целях стенда TCP-портов нет — ответ RST тоже доказывает путь.
+  tcp_targets: [203.0.113.1:443, 203.0.113.2:443]
   interval: 2s
   timeout: 1s
   # DNS стенда отвечает 203.0.113.10 (labsrv) на любое имя.

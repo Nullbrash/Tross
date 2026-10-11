@@ -22,8 +22,11 @@ type LinkProbe struct {
 // HTTPCheckURL — адрес проверки подключения и ожидаемый ответ.
 type HTTPCheckURL struct {
 	URL    string
-	Status int
+	Status int    // 0 — любой ответ (только для Domestic по https)
 	Body   string // подстрока тела; пусто — не проверять
+	// Domestic — российский адрес: не засчитывается как «интернет есть»,
+	// а уточняет причину неудачи (нет зарубежного / нет HTTP вовсе).
+	Domestic bool
 }
 
 // HTTPCheckOptions — проверка «настоящего» интернета через канал; пустой
@@ -44,14 +47,15 @@ type SpeedTestOptions struct {
 
 // Options — настройки реального монитора.
 type Options struct {
-	Log       *slog.Logger
-	Bus       event.EventBus
-	Interval  time.Duration
-	Timeout   time.Duration
-	Params    linkhealth.Params
-	TCPPort   uint16
-	HTTPCheck HTTPCheckOptions
-	SpeedTest SpeedTestOptions
+	Log      *slog.Logger
+	Bus      event.EventBus
+	Interval time.Duration
+	Timeout  time.Duration
+	Params   linkhealth.Params
+	// TCPTargets — по одной TCP-пробе за раунд, по кругу.
+	TCPTargets []netip.AddrPort
+	HTTPCheck  HTTPCheckOptions
+	SpeedTest  SpeedTestOptions
 }
 
 // activeValidFor — сколько учитывается результат активного замера.

@@ -69,10 +69,12 @@ type Link struct {
 	Table  int    `yaml:"table"`
 	FwMark uint32 `yaml:"fwmark"`
 	// ProbeTargets — свои цели проверок; пусто — общие из monitor.targets.
-	ProbeTargets       []netip.Addr `yaml:"probe_targets"`
-	SQM                SQM          `yaml:"sqm"`
-	Quota              *Quota       `yaml:"quota"`
-	WhitelistDetection bool         `yaml:"whitelist_detection"`
+	ProbeTargets []netip.Addr `yaml:"probe_targets"`
+	SQM          SQM          `yaml:"sqm"`
+	Quota        *Quota       `yaml:"quota"`
+	// WhitelistDetection по умолчанию true: «белые списки» вводят и у проводных
+	// провайдеров, а распознавание стоит только проб к российским целям.
+	WhitelistDetection *bool `yaml:"whitelist_detection"`
 }
 
 // SQM — CAKE на канале; нулевая скорость — брать из измерений монитора.
@@ -97,13 +99,14 @@ type Monitor struct {
 	// и подряд удачных до возврата в «up».
 	FailAfter    int `yaml:"fail_after"`
 	RecoverAfter int `yaml:"recover_after"`
-	// WhitelistTargets — цели, доступные и в режиме «белых списков» оператора;
-	// у каналов с whitelist_detection исключаются из общих целей.
+	// WhitelistTargets — российские цели в разных AS: доступны и в режиме
+	// «белых списков»; у каналов с whitelist_detection исключаются из общих.
 	WhitelistTargets []netip.Addr `yaml:"whitelist_targets"`
-	// TCPFallbackPort — запасная проба, если ICMP режется по пути.
-	TCPFallbackPort uint16    `yaml:"tcp_fallback_port"`
-	HTTPCheck       HTTPCheck `yaml:"http_check"`
-	SpeedTest       SpeedTest `yaml:"speedtest"`
+	// TCPTargets — TCP-пробы (по одной за раунд, по кругу): ICMP может
+	// проходить, когда TCP режется, и наоборот.
+	TCPTargets []netip.AddrPort `yaml:"tcp_targets"`
+	HTTPCheck  HTTPCheck        `yaml:"http_check"`
+	SpeedTest  SpeedTest        `yaml:"speedtest"`
 }
 
 // HTTPCheck — проверка «настоящего» интернета через канал: ping может
@@ -118,11 +121,15 @@ type HTTPCheck struct {
 	URLs      []HTTPCheckURL `yaml:"urls"`
 }
 
-// HTTPCheckURL — адрес и ожидаемый ответ; Body — подстрока тела (пусто — не проверять).
+// HTTPCheckURL — адрес и ожидаемый ответ; Body — подстрока тела (пусто — не
+// проверять). Domestic — российский адрес: не засчитывается как «интернет
+// есть», а различает «нет зарубежного» и «нет HTTP вовсе»; только https,
+// Status 0 — любой ответ (страница авторизации не подделает сертификат).
 type HTTPCheckURL struct {
-	URL    string `yaml:"url"`
-	Status int    `yaml:"status"`
-	Body   string `yaml:"body"`
+	URL      string `yaml:"url"`
+	Status   int    `yaml:"status"`
+	Body     string `yaml:"body"`
+	Domestic bool   `yaml:"domestic"`
 }
 
 // SpeedTest — активный замер скорости: на проводных каналах раз в сутки в At,
@@ -150,7 +157,7 @@ func (c *Config) ProbeTargets(l Link) (general, whitelist []netip.Addr) {
 	if len(targets) == 0 {
 		targets = c.Monitor.Targets
 	}
-	if !l.WhitelistDetection {
+	if l.WhitelistDetection == nil || !*l.WhitelistDetection {
 		return targets, nil
 	}
 	wl := make(map[netip.Addr]bool, len(c.Monitor.WhitelistTargets))

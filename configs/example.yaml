@@ -53,42 +53,52 @@ links:
     priority: 100
     # metered: true                 # по умолчанию true для lte
     quota: { monthly_gb: 50, reset_day: 1 }
-    whitelist_detection: true       # распознавать режим «белых списков» оператора
-    probe_targets: [77.88.8.8, 1.1.1.1]
+    # whitelist_detection: true     # по умолчанию true у всех каналов
     sqm: { enabled: true }
 
 monitor:
-  targets: [1.1.1.1, 8.8.8.8, 77.88.8.8]
+  # Зарубежные цели в разных AS (Cloudflare, Google, Quad9) + российские в
+  # разных AS (Яндекс, MSK-IX, Билайн). 8.8.4.4 вместо 8.8.8.8: в июле 2026
+  # у 8.8.8.8 резали TCP. Пинг — дешёвый, но не доказательство: см. tcp_targets.
+  targets: [1.1.1.1, 8.8.4.4, 9.9.9.9, 77.88.8.8, 195.208.4.1, 194.67.2.114]
   interval: 2s
   timeout: 1s
   window: 30                        # проб в окне расчёта задержки/джиттера/потерь
   fail_after: 3                     # раундов без ответов подряд до down (~6 с)
   recover_after: 10                 # удачных подряд до возврата в up (~20 с)
-  # Цели, доступные даже в режиме «белых списков» оператора; у каналов с
-  # whitelist_detection исключаются из общих целей (по умолчанию: пусто).
-  whitelist_targets: [77.88.8.8]
-  tcp_fallback_port: 443            # запасная проба, если ICMP режется
+  # Российские цели (доступны и в режиме «белых списков»): отвечают только они
+  # → канал restricted; молчат и они → канал просто плохой (down).
+  whitelist_targets: [77.88.8.8, 195.208.4.1, 194.67.2.114]
+  # TCP-проба каждый раунд (по кругу): ICMP проходит, когда TCP режется, и
+  # наоборот; стабильно падающий TCP при живом ping даёт degraded.
+  tcp_targets: [1.1.1.1:443, 8.8.4.4:443, 9.9.9.9:443]
   # Проверка «настоящего» интернета: ping может идти, а HTTP — резаться или
   # подменяться (страница авторизации, «белые списки»). fail_after неудач
   # подряд → канал restricted. Запросы и DNS — через сам канал, без
-  # перехода по перенаправлениям. Достаточно ответа одного адреса.
+  # перехода по перенаправлениям. Достаточно ответа одного зарубежного адреса;
+  # российские (domestic, только https, status 0 — любой ответ) различают «нет
+  # зарубежного» (вероятно, белые списки) и «нет HTTP вовсе».
   http_check:
     enabled: true
     interval: 30s
     timeout: 5s
     fail_after: 2
-    dns: [1.1.1.1, 8.8.8.8]
+    dns: [1.1.1.1, 8.8.4.4, 9.9.9.9]
     urls:
       - { url: "http://cp.cloudflare.com/generate_204", status: 204 }
       - { url: "https://www.gstatic.com/generate_204", status: 204 }
       - { url: "http://detectportal.firefox.com/success.txt", status: 200, body: success }
       - { url: "http://www.msftconnecttest.com/connecttest.txt", status: 200, body: "Microsoft Connect Test" }
+      - { url: "https://ya.ru/", domestic: true }
+      - { url: "https://www.gosuslugi.ru/", domestic: true }
   # Скорость: всегда пассивно по реальному трафику; активный тест — на
   # проводных раз в сутки в `at`, на лимитированных (LTE) — только по команде.
   speedtest:
     # Один ответ сервера ограничен (Cloudflare: 403 на >= 100 МБ) — тест
-    # повторяет запросы в 4 потока до duration или max_bytes. Адреса
-    # пробуются по порядку: следующий — если предыдущий не отдал данных.
+    # повторяет запросы в 2 потока (больше 3 TLS к одному имени за минуту ТСПУ
+    # может «заморозить») до duration или max_bytes. Передача, застывшая до
+    # 64 КБ (блок «после ~25 пакетов»), — признак блокировки источника, а не
+    # скорости: берётся следующий адрес.
     urls:
       - https://speed.cloudflare.com/__down?bytes=50000000
       - https://web1.cachefly.net/speedtest/downloading
@@ -165,11 +175,15 @@ classes:
 
 dns:
   listen: ["192.168.10.1:53"]
-  upstreams:                        # по умолчанию: cloudflare, google (DoH), quad9 (DoT)
-    - { name: cloudflare, url: "https://cloudflare-dns.com/dns-query" }
-    - { name: google,     url: "https://dns.google/dns-query" }
-    - { name: quad9,      url: "tls://dns.quad9.net" }
-  bootstrap: [1.1.1.1, 8.8.8.8]     # для разрешения имён самих DoH/DoT-серверов
+  upstreams:                        # по умолчанию — список ниже
+    # По IP, а не по имени: с августа 2026 DoH/DoT по имени (dns.google,
+    # cloudflare-dns.com, dns.quad9.net) обрывают по SNI; 8.8.4.4 вместо 8.8.8.8.
+    - { name: cloudflare,   url: "https://1.1.1.1/dns-query" }
+    - { name: cloudflare-2, url: "https://1.0.0.1/dns-query" }
+    - { name: google,       url: "https://8.8.4.4/dns-query" }
+    - { name: quad9,        url: "https://9.9.9.9/dns-query" }
+    - { name: quad9-dot,    url: "tls://149.112.112.112" }
+  bootstrap: [1.1.1.1, 8.8.4.4]     # для апстримов, заданных именем
   cache_size: 10000
   set_ttl: { min: 5m, max: 12h }    # пределы таймаута IP в множествах nftables
   firefox_canary_nxdomain: true     # NXDOMAIN на use-application-dns.net

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strings"
 
 	"tross/core/lists"
 	"tross/core/model"
@@ -179,8 +180,13 @@ func (c *Config) validateMonitor(p *problems) {
 			p.add("monitor.whitelist_targets", "%s: only IPv4 is supported", a)
 		}
 	}
-	if m.TCPFallbackPort == 0 {
-		p.add("monitor.tcp_fallback_port", "must be non-zero")
+	if len(m.TCPTargets) == 0 {
+		p.add("monitor.tcp_targets", "at least one target is required")
+	}
+	for _, a := range m.TCPTargets {
+		if !a.Addr().Is4() || a.Port() == 0 {
+			p.add("monitor.tcp_targets", "%s: want IPv4:port", a)
+		}
 	}
 	for i, s := range m.SpeedTest.URLs {
 		if !httpURL(s) {
@@ -197,10 +203,24 @@ func (c *Config) validateMonitor(p *problems) {
 				p.add("monitor.http_check.dns", "%s: only IPv4 is supported", a)
 			}
 		}
+		foreign := 0
 		for i, u := range h.URLs {
-			if !httpURL(u.URL) || u.Status < 100 || u.Status > 599 {
-				p.add(fmt.Sprintf("monitor.http_check.urls[%d]", i), "want http(s) URL and HTTP status, got %q %d", u.URL, u.Status)
+			f := fmt.Sprintf("monitor.http_check.urls[%d]", i)
+			switch {
+			case !httpURL(u.URL):
+				p.add(f, "want http(s) URL, got %q", u.URL)
+			case u.Domestic && !strings.HasPrefix(u.URL, "https://"):
+				// По http страница авторизации ответит тем же, что и настоящий сайт.
+				p.add(f, "domestic check must use https, got %q", u.URL)
+			case u.Status == 0 && !u.Domestic, u.Status != 0 && (u.Status < 100 || u.Status > 599):
+				p.add(f, "want HTTP status (0 — any — only for domestic), got %d", u.Status)
 			}
+			if !u.Domestic {
+				foreign++
+			}
+		}
+		if foreign == 0 {
+			p.add("monitor.http_check.urls", "at least one non-domestic URL is required")
 		}
 	}
 	if _, _, ok := m.SpeedTest.AtClock(); !ok {

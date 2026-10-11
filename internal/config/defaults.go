@@ -16,7 +16,15 @@ const LinkMarkMask uint32 = 0x0000ff00
 
 func defaultTable(i int) int   { return 100 + i + 1 }
 func defaultMark(i int) uint32 { return uint32(i+1) << 8 }
-func ptr[T any](v T) *T        { return &v }
+func addrs(s ...string) []netip.Addr {
+	out := make([]netip.Addr, len(s))
+	for i, a := range s {
+		out[i] = netip.MustParseAddr(a)
+	}
+	return out
+}
+
+func ptr[T any](v T) *T { return &v }
 func orDefault[T comparable](v *T, d T) {
 	var zero T
 	if *v == zero {
@@ -46,14 +54,27 @@ func (c *Config) applyDefaults() {
 		if l.Metered == nil {
 			l.Metered = ptr(l.Kind == model.LinkKindLTE)
 		}
+		if l.WhitelistDetection == nil {
+			l.WhitelistDetection = ptr(true)
+		}
 	}
 
 	m := &c.Monitor
+	// Цели — зарубежные в разных AS (Cloudflare, Google, Quad9) и российские в
+	// разных AS (Яндекс, MSK-IX, Билайн): по двум группам различаются «белые
+	// списки» оператора и обрыв. 8.8.4.4 — у 8.8.8.8 бывает отрезан TCP
+	// (подробнее — docs/CONTEXT_monitor.md).
 	if len(m.Targets) == 0 {
-		m.Targets = []netip.Addr{
-			netip.MustParseAddr("1.1.1.1"),
-			netip.MustParseAddr("8.8.8.8"),
-			netip.MustParseAddr("77.88.8.8"),
+		m.Targets = addrs("1.1.1.1", "8.8.4.4", "9.9.9.9", "77.88.8.8", "195.208.4.1", "194.67.2.114")
+	}
+	if len(m.WhitelistTargets) == 0 {
+		m.WhitelistTargets = addrs("77.88.8.8", "195.208.4.1", "194.67.2.114")
+	}
+	if len(m.TCPTargets) == 0 {
+		m.TCPTargets = []netip.AddrPort{
+			netip.MustParseAddrPort("1.1.1.1:443"),
+			netip.MustParseAddrPort("8.8.4.4:443"),
+			netip.MustParseAddrPort("9.9.9.9:443"),
 		}
 	}
 	orDefault(&m.Interval, 2*time.Second)
@@ -61,7 +82,6 @@ func (c *Config) applyDefaults() {
 	orDefault(&m.Window, 30)
 	orDefault(&m.FailAfter, 3)
 	orDefault(&m.RecoverAfter, 10)
-	orDefault(&m.TCPFallbackPort, 443)
 	if len(m.SpeedTest.URLs) == 0 {
 		m.SpeedTest.URLs = []string{
 			"https://speed.cloudflare.com/__down?bytes=50000000",
@@ -76,7 +96,7 @@ func (c *Config) applyDefaults() {
 	orDefault(&h.Timeout, 5*time.Second)
 	orDefault(&h.FailAfter, 2)
 	if len(h.DNS) == 0 {
-		h.DNS = []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}
+		h.DNS = addrs("1.1.1.1", "8.8.4.4", "9.9.9.9")
 	}
 	if len(h.URLs) == 0 {
 		h.URLs = []HTTPCheckURL{
@@ -84,6 +104,8 @@ func (c *Config) applyDefaults() {
 			{URL: "https://www.gstatic.com/generate_204", Status: 204},
 			{URL: "http://detectportal.firefox.com/success.txt", Status: 200, Body: "success"},
 			{URL: "http://www.msftconnecttest.com/connecttest.txt", Status: 200, Body: "Microsoft Connect Test"},
+			{URL: "https://ya.ru/", Domestic: true},
+			{URL: "https://www.gosuslugi.ru/", Domestic: true},
 		}
 	}
 	orDefault(&m.SpeedTest.At, "04:00")
@@ -108,13 +130,16 @@ func (c *Config) applyDefaults() {
 	d := &c.DNS
 	if len(d.Upstreams) == 0 {
 		d.Upstreams = []Upstream{
-			{Name: "cloudflare", URL: "https://cloudflare-dns.com/dns-query"},
-			{Name: "google", URL: "https://dns.google/dns-query"},
-			{Name: "quad9", URL: "tls://dns.quad9.net"},
+			// По IP, а не по имени: DoH/DoT по имени сервера обрывают по SNI.
+			{Name: "cloudflare", URL: "https://1.1.1.1/dns-query"},
+			{Name: "cloudflare-2", URL: "https://1.0.0.1/dns-query"},
+			{Name: "google", URL: "https://8.8.4.4/dns-query"},
+			{Name: "quad9", URL: "https://9.9.9.9/dns-query"},
+			{Name: "quad9-dot", URL: "tls://149.112.112.112"},
 		}
 	}
 	if len(d.Bootstrap) == 0 {
-		d.Bootstrap = []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}
+		d.Bootstrap = addrs("1.1.1.1", "8.8.4.4")
 	}
 	orDefault(&d.CacheSize, 10000)
 	orDefault(&d.SetTTL.Min, 5*time.Minute)

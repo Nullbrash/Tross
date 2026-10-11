@@ -7,6 +7,7 @@ package linkmon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -80,7 +81,8 @@ func start(t *testing.T) *bench {
 	bus := event.NewBus()
 	m, err := NewSystem(Options{
 		Log: log, Bus: bus, Interval: 2 * time.Second, Timeout: time.Second,
-		Params: linkhealth.DefaultParams(), TCPPort: 443,
+		Params:     linkhealth.DefaultParams(),
+		TCPTargets: []netip.AddrPort{netip.AddrPortFrom(t1, 443), netip.AddrPortFrom(t2, 443)},
 		HTTPCheck: HTTPCheckOptions{
 			Interval: 4 * time.Second, Timeout: 2 * time.Second,
 			DNS:  []netip.Addr{netip.MustParseAddr("203.0.113.53")},
@@ -321,4 +323,25 @@ func TestHTTPBlockedWhilePingWorks(t *testing.T) {
 	t.Logf("measure: HTTP block detected in %v", time.Since(since).Round(100*time.Millisecond))
 	del()
 	b.wait(t, "isp1", model.LinkStateUp, 15*time.Second)
+}
+
+// TestSpeedTestFrozenTransferIsBlockNotSpeed — передача, застывшая после
+// ~36 КБ (блок источника «после ~25 пакетов»; по байтам — на стенде veth
+// склеивает пакеты до 64 КБ), должна дать ошибку «источник
+// заблокирован», а не крошечную «скорость».
+func TestSpeedTestFrozenTransferIsBlockNotSpeed(t *testing.T) {
+	b := start(t)
+	nftIn(t, "tl-isp1", "table ip tl_l425 { chain f { type filter hook forward priority 0; tcp sport 80 ct reply bytes > 36000 drop; }; }")
+	t.Cleanup(func() {
+		_ = exec.Command("ip", "netns", "exec", "tl-isp1", "nft", "delete", "table", "ip", "tl_l425").Run()
+	})
+	began := time.Now()
+	th, err := b.mon.SpeedTest(context.Background(), "isp1")
+	t.Logf("measure: frozen source detected in %v: %v", time.Since(began).Round(100*time.Millisecond), err)
+	if err == nil {
+		t.Fatalf("frozen transfer reported as speed %d bit/s", th.DownBps)
+	}
+	if !errors.Is(err, ErrTransferFrozen) {
+		t.Fatalf("want ErrTransferFrozen, got %v", err)
+	}
 }

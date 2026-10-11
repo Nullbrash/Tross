@@ -3,6 +3,7 @@
 package linkmon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -64,6 +65,9 @@ func NewSystem(opts Options, probes []LinkProbe) (LinkMonitor, error) {
 	if opts.Interval <= 0 || opts.Timeout <= 0 || opts.Timeout > opts.Interval {
 		return nil, errors.New("linkmon: need 0 < timeout <= interval")
 	}
+	if len(opts.TCPTargets) == 0 {
+		return nil, errors.New("linkmon: no TCP probe targets")
+	}
 	s := &System{opts: opts}
 	for _, p := range probes {
 		if len(p.Targets) == 0 {
@@ -115,6 +119,26 @@ func (s *System) round(ctx context.Context, l *link) {
 		}
 		l.pinger = p
 	}
+	type tcpRes struct {
+		rtt time.Duration
+		ok  bool
+	}
+	// На лимитированном канале регулярная TCP-проба — раз в tcpEveryMetered
+	// раундов (~250–350 Б за пробу, ~13 МБ/сутки при каждом раунде).
+	every := 1
+	if l.probe.Link.Metered {
+		every = tcpEveryMetered
+	}
+	target := s.opts.TCPTargets[l.rounds%len(s.opts.TCPTargets)]
+	probe := func() tcpRes {
+		rtt, ok := s.tcpProbe(ctx, l, target)
+		return tcpRes{rtt, ok}
+	}
+	tcpDone := make(chan tcpRes, 1)
+	regular := l.rounds%every == 0
+	if regular {
+		go func() { tcpDone <- probe() }()
+	}
 	if l.pinger != nil {
 		type res struct {
 			rtt time.Duration
@@ -144,11 +168,28 @@ func (s *System) round(ctx context.Context, l *link) {
 			}
 		}
 	}
-	if r.Recv == 0 {
-		// ICMP может резаться по пути — одна TCP-проба вместо него.
-		if rtt, ok := s.tcpProbe(ctx, l, l.probe.Targets[0]); ok {
-			r.Sent, r.Recv, r.RTTs = 1, 1, []time.Duration{rtt}
+	// TCP-проба каждый раунд (цели по кругу): ICMP может проходить, когда TCP
+	// режется, и наоборот. Шла параллельно с ICMP — ждём её здесь.
+	var tcp tcpRes
+	switch {
+	case regular:
+		tcp = <-tcpDone
+	case r.Recv == 0:
+		tcp = probe() // ICMP молчит — TCP как запасная проба всегда
+	}
+	switch {
+	case r.Recv > 0 && !regular:
+	case r.Recv > 0:
+		// Стабильно падающий TCP при живом ICMP поднимает потери окна → degraded.
+		r.Sent++
+		if tcp.ok {
+			r.Recv++
+			r.RTTs = append(r.RTTs, tcp.rtt)
 		}
+	case tcp.ok:
+		// ICMP режется по пути — раунд засчитывается одной TCP-пробой, иначе
+		// потери 75 % держали бы канал в degraded.
+		r.Sent, r.Recv, r.RTTs = 1, 1, []time.Duration{tcp.rtt}
 	}
 
 	l.mu.Lock()
@@ -205,12 +246,24 @@ func (s *System) httpCheck(ctx context.Context, l *link) {
 	}
 	ok, why := false, ""
 	for _, u := range o.URLs {
+		if u.Domestic {
+			continue
+		}
 		if err := checkURL(ctx, l.http, u); err != nil {
 			why = err.Error()
 			continue
 		}
 		ok, why = true, ""
 		break
+	}
+	if !ok {
+		// Российские адреса не дают «интернет есть», но различают причину.
+		for _, u := range o.URLs {
+			if u.Domestic && checkURL(ctx, l.http, u) == nil {
+				why = "only domestic sites answer (operator whitelist?); " + why
+				break
+			}
+		}
 	}
 	now := time.Now()
 	l.mu.Lock()
@@ -235,7 +288,9 @@ func checkURL(ctx context.Context, c *http.Client, u HTTPCheckURL) error {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode != u.Status {
+	// Status 0 — любой ответ: для российских https-адресов важен сам факт
+	// настоящего TLS-рукопожатия.
+	if u.Status != 0 && resp.StatusCode != u.Status {
 		return fmt.Errorf("%s: status %d, want %d", req.URL.Host, resp.StatusCode, u.Status)
 	}
 	if u.Body != "" && !strings.Contains(string(body), u.Body) {
@@ -289,10 +344,10 @@ func (s *System) passiveLocked(l *link, now time.Time) (down, up uint64) {
 	return l.peak.Peak(now)
 }
 
-func (s *System) tcpProbe(ctx context.Context, l *link, dst netip.Addr) (time.Duration, bool) {
+func (s *System) tcpProbe(ctx context.Context, l *link, dst netip.AddrPort) (time.Duration, bool) {
 	d := net.Dialer{Timeout: s.opts.Timeout, Control: sockopts(l.probe.Link.Interface, l.probe.Mark)}
 	start := time.Now()
-	c, err := d.DialContext(ctx, "tcp4", netip.AddrPortFrom(dst, s.opts.TCPPort).String())
+	c, err := d.DialContext(ctx, "tcp4", dst.String())
 	rtt := time.Since(start)
 	if err == nil {
 		c.Close()
@@ -369,15 +424,26 @@ func (s *System) SpeedTest(ctx context.Context, id model.LinkID) (model.Throughp
 		}
 		wg.Wait()
 		close(errs)
-		if n := total.Load(); n > 0 {
-			th = model.Throughput{DownBps: uint64(float64(n) * 8 / time.Since(start).Seconds()), MeasuredAt: time.Now()}
+		var frozen, other error
+		for err := range errs {
+			switch {
+			case errors.Is(err, ErrTransferFrozen):
+				frozen = err
+			case err != nil:
+				other = err
+			}
+		}
+		// Застывшая передача — признак блокировки источника, а не скорости
+		// канала: такой замер не засчитывается, берётся следующий источник.
+		if frozen == nil && total.Load() > 0 {
+			th = model.Throughput{DownBps: uint64(float64(total.Load()) * 8 / time.Since(start).Seconds()), MeasuredAt: time.Now()}
 			break
 		}
-		lastErr = fmt.Errorf("%s: %w", url, <-errs)
+		lastErr = fmt.Errorf("%s: %w", url, cmp.Or(frozen, other, errors.New("no data")))
 		s.opts.Log.Warn("speed test source failed, trying next", "link", id, "err", lastErr)
 	}
 	if th.MeasuredAt.IsZero() {
-		return model.Throughput{}, fmt.Errorf("speed test %s: no data from any source: %w", id, lastErr)
+		return model.Throughput{}, fmt.Errorf("speed test %s: no usable source: %w", id, lastErr)
 	}
 	l.mu.Lock()
 	l.active = th
@@ -386,9 +452,19 @@ func (s *System) SpeedTest(ctx context.Context, id model.LinkID) (model.Throughp
 	return th, nil
 }
 
-// speedStreams — параллельных потоков замера: один поток часто не нагружает
-// канал целиком (окно TCP, задержка).
-const speedStreams = 4
+// speedStreams — параллельных потоков замера. Не больше двух: DPI может
+// «заморозить» больше 3 TLS-сессий к одному имени за минуту; соединения
+// потоков переиспользуются между запросами.
+const speedStreams = 2
+
+const tcpEveryMetered = 5
+
+// stallAfter — нагруженный поток без единого байта столько времени застыл:
+// работающий канал, даже медленный, так не замирает; типичный случай — блок
+// источника «после ~25 пакетов» (12–36 КБ).
+const stallAfter = 3 * time.Second
+
+var ErrTransferFrozen = errors.New("transfer froze early — source likely blocked (DPI), not a slow link")
 
 // speedStream повторяет запросы, пока не истечёт срок или не наберётся
 // общий предел. Повтор нужен: сервер ограничивает объём одного ответа
@@ -396,32 +472,69 @@ const speedStreams = 4
 func speedStream(ctx context.Context, c *http.Client, url string, deadline time.Time, maxBytes int64, total *atomic.Int64) error {
 	buf := make([]byte, 64<<10)
 	for time.Now().Before(deadline) && total.Load() < maxBytes {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
+		got, stalled, err := speedRequest(ctx, c, url, deadline, maxBytes, total, buf)
+		switch {
+		case stalled:
+			return fmt.Errorf("%w (after %d KB in this response)", ErrTransferFrozen, got>>10)
+		case err != nil:
 			return err
 		}
-		resp, err := c.Do(req)
-		if err != nil {
-			return err
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			return fmt.Errorf("HTTP %d", resp.StatusCode)
-		}
-		for time.Now().Before(deadline) && total.Load() < maxBytes {
-			k, err := resp.Body.Read(buf)
-			total.Add(int64(k))
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				resp.Body.Close()
-				return err
-			}
-		}
-		resp.Body.Close()
 	}
 	return nil
+}
+
+// speedRequest — один запрос со сторожем: нет данных stallAfter — запрос
+// отменяется и помечается застывшим.
+func speedRequest(ctx context.Context, c *http.Client, url string, deadline time.Time, maxBytes int64, total *atomic.Int64, buf []byte) (got int64, stalled bool, err error) {
+	rctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var last atomic.Int64
+	last.Store(time.Now().UnixNano())
+	var froze atomic.Bool
+	watchdog := time.NewTicker(250 * time.Millisecond)
+	defer watchdog.Stop()
+	go func() {
+		for {
+			select {
+			case <-rctx.Done():
+				return
+			case <-watchdog.C:
+				if time.Since(time.Unix(0, last.Load())) > stallAfter {
+					froze.Store(true)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return 0, froze.Load(), err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, false, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	for time.Now().Before(deadline) && total.Load() < maxBytes {
+		k, err := resp.Body.Read(buf)
+		if k > 0 {
+			got += int64(k)
+			total.Add(int64(k))
+			last.Store(time.Now().UnixNano())
+		}
+		if err == io.EOF {
+			return got, false, nil
+		}
+		if err != nil {
+			return got, froze.Load(), err
+		}
+	}
+	return got, false, nil
 }
 
 // sockopts — сокет идёт через канал: метка выбирает его таблицу маршрутизации,
