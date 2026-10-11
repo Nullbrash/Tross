@@ -1,0 +1,292 @@
+#!/usr/bin/env bash
+# Закрытый стенд Tross из сетевых пространств имён (netns). Запуск — от root
+# на машине-стенде. С настоящей сетью машины стенд не связан ничем: ни одного
+# интерфейса в корневом пространстве, поэтому сбой не задевает SSH.
+#
+#  [tl-client] --lan-- [tl-tross] --wan1-- [tl-isp1] --+
+#                                  --wan2-- [tl-isp2] --+-- [tl-inet] (серверы)
+#                                  --wan3-- [tl-lte]  --+
+#
+# Команды:
+#   up | down | status
+#   shape <isp1|isp2|lte> <rtt_ms> <jitter_ms> <loss_pct> <down_mbit|0> <up_mbit|0>
+#   break <isp1|isp2|lte> [loss|down]   обрыв: 100 % потерь (по умолчанию) или нет линка
+#   restore <isp1|isp2|lte>             вернуть профиль канала и линк
+#   simple-route <isp1|isp2|lte|off>    маршрут и NAT без демона (для замеров стенда)
+#   offload <on|off>                    off — пакеты настоящего размера (честные замеры ЦП)
+#   selftest                            проверить стенд без демона
+#   exec <netns> <команда...>
+set -euo pipefail
+
+STATE=/run/tross-lab
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+BIN=${TROSS_LAB_BIN:-$SCRIPT_DIR/../bin}
+
+NS_ALL=(tl-client tl-tross tl-isp1 tl-isp2 tl-lte tl-inet)
+LINKS=(isp1 isp2 lte)
+declare -A WAN=([isp1]=wan1 [isp2]=wan2 [lte]=wan3)
+declare -A IDX=([isp1]=1 [isp2]=2 [lte]=3)
+# Профили по умолчанию: rtt jitter loss down up (мс, мс, % на направление, Мбит/с; 0 — без ограничения).
+declare -A PROFILE=([isp1]="8 1 0 0 0" [isp2]="12 2 0 0 0" [lte]="45 10 0.5 60 20")
+
+SRV_IP=203.0.113.10
+DNS_IP=203.0.113.53
+PROBE_IPS=(203.0.113.1 203.0.113.2 203.0.113.3)
+
+die() { echo "lab-netns: $*" >&2; exit 1; }
+nsx() { local ns=$1; shift; ip netns exec "$ns" "$@"; }
+need_root() { [ "$(id -u)" = 0 ] || die "run as root (sudo)"; }
+is_up() { ip netns list | grep -qw tl-tross; }
+ns_of() { case $1 in isp1) echo tl-isp1;; isp2) echo tl-isp2;; lte) echo tl-lte;; *) die "unknown link '$1' (isp1|isp2|lte)";; esac; }
+
+sysctls() {
+	local ns=$1 fwd=$2
+	nsx "$ns" sysctl -qw net.ipv4.ip_forward="$fwd"
+	# IPv6 в v1 не поддерживается (D-29) — на стенде выключен.
+	nsx "$ns" sysctl -qw net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1
+	nsx "$ns" ip link set lo up
+}
+
+cmd_up() {
+	need_root
+	is_up && die "already up (run: down)"
+	mkdir -p "$STATE"
+	for ns in "${NS_ALL[@]}"; do ip netns add "$ns"; done
+	sysctls tl-client 0; sysctls tl-tross 1; sysctls tl-inet 0
+	for l in "${LINKS[@]}"; do sysctls "$(ns_of "$l")" 1; done
+
+	# Домашняя сеть.
+	ip link add eth0 netns tl-client type veth peer name lan netns tl-tross
+	nsx tl-client ip addr add 192.168.77.10/24 dev eth0
+	nsx tl-tross ip addr add 192.168.77.1/24 dev lan
+	nsx tl-client ip link set eth0 up
+	nsx tl-tross ip link set lan up
+	nsx tl-client ip route add default via 192.168.77.1
+
+	# «Интернет»: адреса проб и серверов на dummy-интерфейсе.
+	nsx tl-inet ip link add srv type dummy
+	for a in "${PROBE_IPS[@]}" "$SRV_IP" "$DNS_IP"; do nsx tl-inet ip addr add "$a/32" dev srv; done
+	nsx tl-inet ip link set srv up
+
+	for l in "${LINKS[@]}"; do
+		local i=${IDX[$l]} ns; ns=$(ns_of "$l")
+		# Мини-ПК ↔ провайдер.
+		ip link add "${WAN[$l]}" netns tl-tross type veth peer name cpe netns "$ns"
+		nsx tl-tross ip addr add "100.64.$i.2/30" dev "${WAN[$l]}"
+		nsx "$ns" ip addr add "100.64.$i.1/30" dev cpe
+		# Провайдер ↔ интернет.
+		ip link add upl netns "$ns" type veth peer name "$l" netns tl-inet
+		nsx "$ns" ip addr add "198.18.$i.1/30" dev upl
+		nsx tl-inet ip addr add "198.18.$i.2/30" dev "$l"
+		nsx tl-tross ip link set "${WAN[$l]}" up
+		nsx "$ns" ip link set cpe up
+		nsx "$ns" ip link set upl up
+		nsx tl-inet ip link set "$l" up
+		nsx "$ns" ip route add default via "198.18.$i.2"
+		nsx tl-inet ip route add "100.64.$i.0/30" via "198.18.$i.1"
+		echo "${PROFILE[$l]}" > "$STATE/profile-$l"
+		apply_profile "$l"
+	done
+
+	start_servers
+	echo "lab up: client 192.168.77.10 -> tross 192.168.77.1; wan1/2/3 = isp1/isp2/lte; servers $SRV_IP, dns $DNS_IP"
+}
+
+# netem на обеих сторонах провайдера: cpe — к мини-ПК (загрузка), upl — к интернету (отдача).
+apply_profile() {
+	local l=$1 ns rtt jit loss dn upm half hj
+	ns=$(ns_of "$l")
+	read -r rtt jit loss dn upm < "$STATE/profile-$l"
+	half=$(awk -v r="$rtt" 'BEGIN{printf "%.3f", r/2}')
+	hj=$(awk -v j="$jit" 'BEGIN{printf "%.3f", j/2}')
+	netem "$ns" cpe "$half" "$hj" "$loss" "$dn"
+	netem "$ns" upl "$half" "$hj" "$loss" "$upm"
+}
+
+netem() {
+	local ns=$1 dev=$2 delay=$3 jit=$4 loss=$5 rate=$6 args
+	args=(delay "${delay}ms")
+	if [ "$(awk -v j="$jit" 'BEGIN{print (j>0)}')" = 1 ]; then args+=("${jit}ms" distribution normal); fi
+	if [ "$(awk -v x="$loss" 'BEGIN{print (x>0)}')" = 1 ]; then args+=(loss "${loss}%"); fi
+	if [ "$rate" != 0 ]; then args+=(rate "${rate}mbit"); fi
+	nsx "$ns" tc qdisc replace dev "$dev" root netem limit 10000 "${args[@]}"
+}
+
+start_servers() {
+	[ -x "$BIN/labsrv" ] || die "no $BIN/labsrv (build: go build -o bin/ ./cmd/...)"
+	nsx tl-inet setsid "$BIN/labsrv" serve -http "$SRV_IP:80" -udp "$SRV_IP:9000" \
+		> "$STATE/labsrv.log" 2>&1 < /dev/null &
+	echo $! > "$STATE/labsrv.pid"
+	if command -v iperf3 >/dev/null; then
+		nsx tl-inet iperf3 -s -B "$SRV_IP" -D --pidfile "$STATE/iperf3.pid" --logfile "$STATE/iperf3.log"
+	fi
+	if command -v dnsmasq >/dev/null; then
+		cat > "$STATE/dnsmasq.conf" <<-EOF
+			listen-address=$DNS_IP
+			bind-interfaces
+			no-resolv
+			no-hosts
+			address=/#/$SRV_IP
+			pid-file=$STATE/dnsmasq.pid
+		EOF
+		nsx tl-inet dnsmasq --conf-file="$STATE/dnsmasq.conf"
+	fi
+}
+
+stop_servers() {
+	for p in labsrv iperf3 dnsmasq; do
+		[ -f "$STATE/$p.pid" ] && kill "$(cat "$STATE/$p.pid")" 2>/dev/null || true
+		rm -f "$STATE/$p.pid"
+	done
+}
+
+cmd_down() {
+	need_root
+	stop_servers
+	for ns in "${NS_ALL[@]}"; do ip netns del "$ns" 2>/dev/null || true; done
+	rm -rf "$STATE"
+	echo "lab down"
+}
+
+cmd_status() {
+	need_root
+	is_up || { echo "lab is down"; return 0; }
+	for ns in "${NS_ALL[@]}"; do
+		echo "== $ns"
+		nsx "$ns" ip -br addr | grep -v '^lo '
+	done
+	for l in "${LINKS[@]}"; do
+		echo "== $l profile: $(cat "$STATE/profile-$l") (rtt jitter loss% down up)"
+		nsx "$(ns_of "$l")" tc qdisc show dev cpe | sed 's/^/   /'
+	done
+	echo "== servers"
+	for p in labsrv iperf3 dnsmasq; do
+		if [ -f "$STATE/$p.pid" ] && kill -0 "$(cat "$STATE/$p.pid")" 2>/dev/null; then echo "   $p running"; else echo "   $p not running"; fi
+	done
+}
+
+cmd_shape() {
+	need_root; is_up || die "lab is down"
+	[ $# = 6 ] || die "shape <link> <rtt_ms> <jitter_ms> <loss_pct> <down_mbit|0> <up_mbit|0>"
+	ns_of "$1" >/dev/null
+	echo "$2 $3 $4 $5 $6" > "$STATE/profile-$1"
+	apply_profile "$1"
+}
+
+cmd_break() {
+	need_root; is_up || die "lab is down"
+	local l=${1:?link} mode=${2:-loss} ns; ns=$(ns_of "$l")
+	case $mode in
+		# Тихий обрыв: линк есть, интернета нет — самый трудный для монитора случай.
+		loss) nsx "$ns" tc qdisc replace dev cpe root netem loss 100%
+		      nsx "$ns" tc qdisc replace dev upl root netem loss 100% ;;
+		down) nsx "$ns" ip link set cpe down ;;
+		*) die "break mode: loss|down" ;;
+	esac
+	echo "$l broken ($mode)"
+}
+
+cmd_restore() {
+	need_root; is_up || die "lab is down"
+	local l=${1:?link} ns; ns=$(ns_of "$l")
+	nsx "$ns" ip link set cpe up
+	apply_profile "$l"
+	echo "$l restored"
+}
+
+# Временная маршрутизация без демона: NAT на всех wan, маршрут — через один канал.
+cmd_simple_route() {
+	need_root; is_up || die "lab is down"
+	local l=${1:?link|off}
+	if [ "$l" = off ]; then
+		nsx tl-tross ip route del default 2>/dev/null || true
+		nsx tl-tross nft delete table ip tl_simple 2>/dev/null || true
+		return 0
+	fi
+	local i=${IDX[$l]:?unknown link}
+	nsx tl-tross nft list table ip tl_simple >/dev/null 2>&1 || nsx tl-tross nft -f - <<-'EOF'
+		table ip tl_simple {
+			chain post { type nat hook postrouting priority 100; oifname { "wan1", "wan2", "wan3" } masquerade; }
+		}
+	EOF
+	nsx tl-tross ip route replace default via "100.64.$i.1" dev "${WAN[$l]}"
+}
+
+# veth по умолчанию гоняет «суперпакеты» до 64 КБ (TSO/GSO/GRO) — пересылка
+# выходит нереально дешёвой. off — пакеты по MTU, как у настоящей сетевой карты
+# без аппаратных ускорений (худший случай для ЦП).
+cmd_offload() {
+	need_root; is_up || die "lab is down"
+	local mode=${1:?on|off} ns dev
+	[ "$mode" = on ] || [ "$mode" = off ] || die "offload on|off"
+	command -v ethtool >/dev/null || die "ethtool is not installed"
+	for ns in "${NS_ALL[@]}"; do
+		for dev in $(nsx "$ns" ls /sys/class/net); do
+			nsx "$ns" ethtool -i "$dev" 2>/dev/null | grep -q '^driver: veth' || continue
+			nsx "$ns" ethtool -K "$dev" tso "$mode" gso "$mode" gro "$mode" >/dev/null 2>&1 || true
+		done
+	done
+	echo "offload $mode"
+}
+
+# --- selftest ------------------------------------------------------------
+
+FAILS=0
+check() { local name=$1; shift; if "$@" >/dev/null 2>&1; then echo "  PASS $name"; else echo "  FAIL $name"; FAILS=$((FAILS+1)); fi; }
+check_not() { local name=$1; shift; if "$@" >/dev/null 2>&1; then echo "  FAIL $name"; FAILS=$((FAILS+1)); else echo "  PASS $name"; fi; }
+
+root_snapshot() {
+	{ ip -4 route show table all; ip rule; ip -br link; nft list ruleset 2>/dev/null; } | md5sum
+}
+
+rx_bytes() { nsx tl-tross cat "/sys/class/net/$1/statistics/rx_bytes"; }
+
+cmd_selftest() {
+	need_root; is_up || die "lab is down"
+	local before; before=$(root_snapshot)
+	for l in "${LINKS[@]}"; do
+		local w=${WAN[$l]} r0 r1
+		echo "== via $l ($w)"
+		cmd_simple_route "$l"
+		r0=$(rx_bytes "$w")
+		check "ping probes" nsx tl-client ping -c3 -W2 -i0.2 "${PROBE_IPS[0]}"
+		check "http" nsx tl-client wget -q -T5 --tries=1 -O- "http://$SRV_IP/"
+		check "dns" sh -c "ip netns exec tl-client dig +short +time=2 +tries=1 @$DNS_IP example.org | grep -qx $SRV_IP"
+		r1=$(rx_bytes "$w")
+		check "traffic went through $w" test "$r1" -gt "$r0"
+		echo "  rtt: $(nsx tl-client ping -c5 -i0.2 -W2 "${PROBE_IPS[0]}" | tail -1)"
+		echo "  udp: $(nsx tl-client "$BIN/labsrv" udpping -target "$SRV_IP:9000" -rate 30 -n 30 2>&1)"
+	done
+
+	echo "== break/restore isp1"
+	cmd_simple_route isp1
+	cmd_break isp1 loss >/dev/null
+	check_not "silent break: no ping" nsx tl-client ping -c2 -W1 "${PROBE_IPS[0]}"
+	check "silent break: link still up" sh -c "ip netns exec tl-tross ip -br link show wan1 | grep -q ' UP '"
+	cmd_restore isp1 >/dev/null
+	check "restored: ping" nsx tl-client ping -c3 -W2 "${PROBE_IPS[0]}"
+	cmd_break isp1 down >/dev/null
+	check "cut: wan1 lost carrier" sh -c "ip netns exec tl-tross ip link show wan1 | grep -q NO-CARRIER"
+	cmd_restore isp1 >/dev/null
+	check "restored after cut: ping" nsx tl-client ping -c3 -W2 "${PROBE_IPS[0]}"
+
+	cmd_simple_route off
+	check "tross ns left clean" sh -c "! ip netns exec tl-tross ip route show default | grep -q . && ! ip netns exec tl-tross nft list tables | grep -q ."
+	check "root namespace untouched" test "$(root_snapshot)" = "$before"
+
+	if [ "$FAILS" = 0 ]; then echo "SELFTEST PASSED"; else echo "SELFTEST FAILED: $FAILS"; return 1; fi
+}
+
+case ${1:-} in
+	up) cmd_up ;;
+	down) cmd_down ;;
+	status) cmd_status ;;
+	shape) shift; cmd_shape "$@" ;;
+	break) shift; cmd_break "$@" ;;
+	restore) shift; cmd_restore "$@" ;;
+	simple-route) shift; cmd_simple_route "$@" ;;
+	offload) shift; cmd_offload "$@" ;;
+	selftest) cmd_selftest ;;
+	exec) shift; need_root; nsx "$@" ;;
+	*) sed -n '2,20p' "$0"; exit 2 ;;
+esac

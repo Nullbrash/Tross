@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Копирует рабочую копию на стенд по SSH (git не нужен) и по желанию
+# собирает или тестирует там. Запускается на машине разработчика.
+#
+#   scripts/lab-sync            только копирование
+#   scripts/lab-sync build      + go build ./cmd/... в ~/tross/bin
+#   scripts/lab-sync test       + build + go test ./...
+#
+# Адрес стенда — TROSS_LAB_HOST (и ключ TROSS_LAB_KEY) из окружения или из
+# .lab.env в корне репозитория (файл вне git).
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck disable=SC1091
+[ -f "$root/.lab.env" ] && . "$root/.lab.env"
+host=${TROSS_LAB_HOST:?set TROSS_LAB_HOST, e.g. in .lab.env}
+key=${TROSS_LAB_KEY:-$HOME/.ssh/tross_lab}
+remote=(ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=10 "$host")
+
+# Новая копия собирается рядом и подменяет старую целиком: удалённые
+# локально файлы не остаются на стенде.
+tar -C "$root" \
+	--exclude=./.git --exclude=./bin --exclude=./.plans --exclude=./.ideas \
+	--exclude=./docs --exclude=./CLAUDE.md --exclude=./.lab.env \
+	-czf - . |
+	"${remote[@]}" 'set -e; rm -rf ~/tross.new; mkdir ~/tross.new; tar -C ~/tross.new -xzf - 2>/dev/null; rm -rf ~/tross; mv ~/tross.new ~/tross; chmod +x ~/tross/scripts/*'
+echo "synced to $host:~/tross"
+
+gobuild='export PATH=$HOME/sdk/go/bin:$PATH; cd ~/tross && go build -trimpath -o bin/ ./cmd/...'
+case ${1:-} in
+	"") ;;
+	build) "${remote[@]}" "$gobuild && ls bin" ;;
+	test) "${remote[@]}" "$gobuild && go vet ./... && go test ./..." ;;
+	*) echo "usage: lab-sync [build|test]" >&2; exit 2 ;;
+esac
