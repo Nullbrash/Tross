@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -19,14 +21,21 @@ import (
 	"tross/internal/config"
 	"tross/internal/dataplane"
 	"tross/internal/linkmon"
+	"tross/internal/logring"
 	"tross/internal/store"
 )
 
-const shutdownTimeout = 5 * time.Second
+const (
+	shutdownTimeout = 5 * time.Second
+	collectEvery    = time.Minute
+	dbFile          = "tross.db"
+)
 
 type Options struct {
-	Config  *config.Config
-	Log     *slog.Logger
+	Config *config.Config
+	Log    *slog.Logger
+	// Logs — кольцо свежих записей того же журнала (для API); может быть nil.
+	Logs    *logring.Ring
 	Version string
 }
 
@@ -37,9 +46,15 @@ func Run(ctx context.Context, opts Options) error {
 	log.Info("trossd starting", "version", opts.Version, "dry_run", cfg.Daemon.DryRun, "links", len(cfg.Links))
 
 	bus := event.NewBus()
-	// SQLite появится вместе с первыми данными, которые нужно хранить (этап 1+).
-	st := store.NewMemory(cfg.Log.RingSize)
+	st, err := openStore(cfg.Daemon.DataDir)
+	if err != nil {
+		return err
+	}
 	defer st.Close()
+	logs := opts.Logs
+	if logs == nil {
+		logs = logring.New(cfg.Log.RingSize)
+	}
 
 	dp, err := newDataplane(cfg, log)
 	if err != nil {
@@ -61,11 +76,15 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	coll := newCollector(log, st, mon)
 
 	srv := &http.Server{
 		Handler: api.New(api.Options{
 			Log:             log,
 			Monitor:         mon,
+			Store:           st,
+			Logs:            logs,
+			System:          coll.Last,
 			AllowedNetworks: cfg.API.AllowedNetworks,
 			Version:         opts.Version,
 			DryRun:          cfg.Daemon.DryRun,
@@ -90,6 +109,7 @@ func Run(ctx context.Context, opts Options) error {
 	linkEvents, unsubscribeLinks := bus.Subscribe(64, event.TopicLinkState)
 	bal := &balancer{log: log, dp: dp, mon: mon, policy: cfg.Policies()[model.ClassDefault]}
 	wg.Go(func() { bal.run(runCtx, linkEvents) })
+	wg.Go(func() { coll.run(runCtx, collectEvery) })
 	wg.Go(func() {
 		if err := mon.Run(runCtx); err != nil {
 			fatal <- fmt.Errorf("link monitor: %w", err)
@@ -123,6 +143,17 @@ func Run(ctx context.Context, opts Options) error {
 	wg.Wait()
 	log.Info("trossd stopped")
 	return runErr
+}
+
+func openStore(dir string) (*store.SQLite, error) {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, fmt.Errorf("data dir: %w", err)
+	}
+	st, err := store.Open(filepath.Join(dir, dbFile), store.DefaultRetention())
+	if err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+	return st, nil
 }
 
 func newDataplane(cfg *config.Config, log *slog.Logger) (dataplane.Dataplane, error) {

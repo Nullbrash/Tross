@@ -1,6 +1,8 @@
 package measure
 
 import (
+	"tross/internal/procfs"
+
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,19 +25,19 @@ type Options struct {
 // Snapshot — сырые счётчики одной выборки.
 type Snapshot struct {
 	At       time.Time
-	CPU      CPUTimes
-	Mem      Mem
+	CPU      procfs.CPUTimes
+	Mem      procfs.Mem
 	DiskSect uint64
 	TempC    float64 // NaN-заменитель: -1, если датчика нет
 	ProcPID  int
-	Proc     ProcStat
+	Proc     procfs.ProcStat
 	Net      map[string][]IfaceBytes // netns → интерфейсы
 }
 
 // Row — вычисленная строка system.csv.
 type Row struct {
 	At                                time.Time
-	CPU                               CPUShare
+	CPU                               procfs.CPUShare
 	MemUsedMB, MemAvailMB, SwapUsedMB float64
 	DiskWriteKBps, DiskWrittenMB      float64
 	TempC                             float64
@@ -57,20 +59,20 @@ func Take(o Options) (Snapshot, error) {
 	if err != nil {
 		return s, err
 	}
-	if s.CPU, err = ParseCPU(string(b)); err != nil {
+	if s.CPU, err = procfs.ParseCPU(string(b)); err != nil {
 		return s, err
 	}
 	if b, err = os.ReadFile("/proc/meminfo"); err != nil {
 		return s, err
 	}
-	if s.Mem, err = ParseMeminfo(string(b)); err != nil {
+	if s.Mem, err = procfs.ParseMeminfo(string(b)); err != nil {
 		return s, err
 	}
 	if o.Disk != "" {
 		if b, err = os.ReadFile("/proc/diskstats"); err != nil {
 			return s, err
 		}
-		if s.DiskSect, err = ParseDiskSectorsWritten(string(b), o.Disk); err != nil {
+		if s.DiskSect, err = procfs.ParseDiskSectorsWritten(string(b), o.Disk); err != nil {
 			return s, err
 		}
 	}
@@ -79,10 +81,10 @@ func Take(o Options) (Snapshot, error) {
 		if pid := findPID(o.Process); pid > 0 {
 			s.ProcPID = pid
 			if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
-				s.Proc.UTime, s.Proc.STime, _ = ParseProcStat(string(b))
+				s.Proc.UTime, s.Proc.STime, _ = procfs.ParseProcStat(string(b))
 			}
 			if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
-				s.Proc.RSSKB, _ = ParseVmRSS(string(b))
+				s.Proc.RSSKB, _ = procfs.ParseVmRSS(string(b))
 			}
 		}
 	}
@@ -109,7 +111,7 @@ func Diff(start, prev, cur Snapshot) (Row, []NetRow) {
 	}
 	r := Row{
 		At:            cur.At,
-		CPU:           CPUDelta(prev.CPU, cur.CPU),
+		CPU:           procfs.CPUDelta(prev.CPU, cur.CPU),
 		MemUsedMB:     float64(cur.Mem.TotalKB-cur.Mem.AvailableKB) / 1024,
 		MemAvailMB:    float64(cur.Mem.AvailableKB) / 1024,
 		SwapUsedMB:    float64(cur.Mem.SwapUsedKB) / 1024,

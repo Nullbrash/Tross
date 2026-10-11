@@ -11,12 +11,18 @@ import (
 
 	"tross/core/model"
 	"tross/internal/linkmon"
+	"tross/internal/logring"
+	"tross/internal/store"
 	"tross/web"
 )
 
 type Options struct {
-	Log             *slog.Logger
-	Monitor         linkmon.LinkMonitor
+	Log     *slog.Logger
+	Monitor linkmon.LinkMonitor
+	Store   store.Store
+	Logs    *logring.Ring
+	// System — последняя выборка загрузки машины; nil — выборок нет.
+	System          func() *store.SystemSample
 	AllowedNetworks []netip.Prefix
 	Version         string
 	DryRun          bool
@@ -34,6 +40,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/links", s.handleLinks)
 	mux.HandleFunc("POST /api/links/{id}/speedtest", s.handleSpeedTest)
+	mux.HandleFunc("GET /api/links/{id}/stats", s.handleLinkStats)
+	mux.HandleFunc("GET /api/system/stats", s.handleSystemStats)
+	mux.HandleFunc("GET /api/events", s.handleEvents)
+	mux.HandleFunc("GET /api/logs", s.handleLogs)
+	mux.HandleFunc("GET /api/metrics", s.handleMetrics)
 	// С методом GET: иначе этот шаблон перехватил бы POST /api/health вместо ответа 405.
 	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})

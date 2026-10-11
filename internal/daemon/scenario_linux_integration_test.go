@@ -33,6 +33,7 @@ func labCfg(t *testing.T) *config.Config {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.Daemon.DataDir = t.TempDir()
 	return cfg
 }
 

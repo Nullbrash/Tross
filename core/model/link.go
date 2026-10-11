@@ -73,8 +73,12 @@ type LinkHealth struct {
 	// Loss — доля потерянных проб в окне, от 0 до 1.
 	Loss       float64    `json:"loss"`
 	Throughput Throughput `json:"throughput"`
-	UpdatedAt  time.Time  `json:"updated_at"`
-	Reason     string     `json:"reason,omitempty"`
+	// RxBytes/TxBytes — накопительные счётчики интерфейса; обнуляются при
+	// пересоздании интерфейса, поэтому потребитель считает разность с защитой.
+	RxBytes   uint64    `json:"rx_bytes"`
+	TxBytes   uint64    `json:"tx_bytes"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Reason    string    `json:"reason,omitempty"`
 }
 
 func (h LinkHealth) Validate() error {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +43,7 @@ func TestRunServesAndStops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.Daemon.DataDir = t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -64,6 +66,36 @@ func TestRunServesAndStops(t *testing.T) {
 			t.Fatalf("daemon did not serve links in time: %v %+v", err, links)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+
+	// События идут в базу через шину асинхронно — ждём «started».
+	base := "http://127.0.0.1:" + port
+	for deadline := time.Now().Add(3 * time.Second); ; {
+		var body struct{ Events []struct{ Topic string } }
+		resp, err := http.Get(base + "/api/events")
+		if err == nil {
+			err = json.NewDecoder(resp.Body).Decode(&body)
+			resp.Body.Close()
+		}
+		if err == nil && slices.ContainsFunc(body.Events, func(e struct{ Topic string }) bool { return e.Topic == "daemon" }) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("events not stored: %v %+v", err, body)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	resp, err := http.Get(base + "/api/metrics")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics: %v %v", resp, err)
+	}
+	var m struct {
+		DBSize int64 `json:"db_size_bytes"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&m)
+	resp.Body.Close()
+	if m.DBSize == 0 {
+		t.Fatal("database file must exist in the data dir")
 	}
 
 	cancel()
@@ -91,6 +123,7 @@ func TestRunFailsOnBusyPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.Daemon.DataDir = t.TempDir()
 	err = Run(context.Background(), Options{Config: cfg, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err == nil {
 		t.Fatal("expected listen error on busy port")

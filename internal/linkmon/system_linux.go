@@ -201,7 +201,8 @@ func (s *System) round(ctx context.Context, l *link) {
 		LinkID: l.probe.Link.ID, State: state, StateSince: since,
 		RTT: m.RTT, Jitter: m.Jitter, Loss: m.Loss,
 		Throughput: combineThroughput(now, down, up, l.active),
-		UpdatedAt:  now, Reason: reason,
+		RxBytes:    l.lastRx, TxBytes: l.lastTx,
+		UpdatedAt: now, Reason: reason,
 	}
 	due := !l.probe.Link.Metered && state.Usable() &&
 		nightlyDue(now, l.lastAuto, s.opts.SpeedTest.Hour, s.opts.SpeedTest.Minute)

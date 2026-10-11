@@ -82,6 +82,9 @@ func (f *Fake) Tick() {
 			state = s
 		}
 		h := f.sample(i, l, state)
+		// Имитация трафика: до 5 % пропускной способности за интервал.
+		h.RxBytes = prev.RxBytes + uint64(f.rnd.Float64()*0.05*float64(h.Throughput.DownBps)/8*f.interval.Seconds())
+		h.TxBytes = prev.TxBytes + uint64(f.rnd.Float64()*0.05*float64(h.Throughput.UpBps)/8*f.interval.Seconds())
 		h.UpdatedAt = now
 		h.StateSince = prev.StateSince
 		if state != prev.State {

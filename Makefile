@@ -25,7 +25,7 @@ build-linux:
 
 # Запуск на машине разработчика: только «сухой» режим.
 run: build
-	./bin/$(BINARY)$(EXE) -config configs/example.yaml -dry-run
+	./bin/$(BINARY)$(EXE) -config configs/example.yaml -dry-run -data-dir bin/data
 
 test:
 	$(GO) test ./...

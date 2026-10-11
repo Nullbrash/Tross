@@ -29,6 +29,7 @@ func TestRealModeOnBench(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.Daemon.DataDir = t.TempDir()
 	if cfg.Daemon.DryRun {
 		t.Fatal("lab config must run in real mode")
 	}

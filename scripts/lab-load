@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Нагрузочные сценарии на закрытом стенде: синтетические аналоги торрента,
+# Steam, стрима и игры — по отдельности и вместе; без демона (простой маршрут
+# через isp1) и с демоном. Запуск на стенде от обычного пользователя (sudo без
+# пароля); стенд поднимается с нуля и в конце снимается.
+#
+#   scripts/lab-load [секунд на сценарий=60] [bare|daemon|both=both] [сценарии...]
+#
+# Сценарии: idle game torrent steam stream all. Во всех, кроме idle, идёт
+# «игра» (UDP 64 пакета/с) — её задержка под нагрузкой и есть прирост пинга.
+# Канал isp1 ограничен 500/500 Мбит/с (порядок реального канала 60 МБ/с),
+# offload off — пакеты настоящего размера (честный ЦП, см. CONTEXT_lab).
+#
+# Результаты: ~/lab-results/<дата>-load/<режим>-<сценарий>/ — system.csv,
+# net.csv, summary.txt (labmeasure), load-*.txt (генераторы), game.txt,
+# conntrack.txt; daemon-api/ — ответы API демона после прогона.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+export PATH=$HOME/sdk/go/bin:$PATH
+dur=${1:-60}
+modes=${2:-both}
+shift 2 || shift $#
+scenarios=("$@")
+[ ${#scenarios[@]} -gt 0 ] || scenarios=(idle game torrent steam stream all)
+[ "$modes" = both ] && modes="bare daemon"
+
+out=$HOME/lab-results/$(date +%F)-load
+lab=$PWD/scripts/lab-netns
+bin=$PWD/bin
+srv=http://203.0.113.10
+api=http://192.168.77.1:8080
+
+declare -A LOAD=(
+	[torrent]="-down 150 -up 50 -chunk 1000000 -churn"
+	[steam]="-down 8 -chunk 100000000"
+	[stream]="-down 1 -down-mbit 20 -up 1 -up-mbit 8 -chunk 100000000000"
+)
+
+S() { sudo -n "$@"; }
+client() { S ip netns exec tl-client "$@"; }
+snap() { S sh -c '{ ip -4 route show table all; ip rule; ip -br link; nft list ruleset; } | md5sum'; }
+
+go build -trimpath -o bin/ ./cmd/...
+mkdir -p "$out"
+before=$(snap)
+
+cleanup() {
+	S pkill -INT -x trossd 2>/dev/null || true
+	sleep 1
+	S "$lab" down >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+S "$lab" down >/dev/null 2>&1 || true
+S "$lab" up >/dev/null
+S "$lab" offload off >/dev/null
+S "$lab" shape isp1 8 1 0 500 500 >/dev/null
+
+run_scenario() {
+	local mode=$1 sc=$2 dir=$out/$1-$2 pids=()
+	rm -rf "$dir"
+	mkdir -p "$dir"
+	echo "--- $mode/$sc (${dur}s)"
+	(for _ in $(seq 1 $((dur / 2))); do S ip netns exec tl-tross cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0; sleep 2; done) >"$dir/conntrack.txt" &
+	pids+=($!)
+	S "$bin/labmeasure" -out "$dir" -duration "${dur}s" -proc trossd -netns tl-tross >/dev/null &
+	pids+=($!)
+	local loads=()
+	case $sc in
+	idle | game) ;;
+	all) loads=(torrent steam stream) ;;
+	*) loads=("$sc") ;;
+	esac
+	for k in "${loads[@]}"; do
+		# shellcheck disable=SC2086
+		client "$bin/labsrv" load -url "$srv" ${LOAD[$k]} -duration "${dur}s" >"$dir/load-$k.txt" 2>&1 &
+		pids+=($!)
+	done
+	if [ "$sc" != idle ]; then
+		# Старт через 3 с — после разгона нагрузки; конец — до её остановки.
+		(sleep 3; client "$bin/labsrv" udpping -target 203.0.113.10:9000 -rate 64 -n $(((dur - 6) * 64)) -size 120) >"$dir/game.txt" 2>&1 &
+		pids+=($!)
+	fi
+	wait "${pids[@]}" || true
+	for f in "$dir"/load-*.txt "$dir/game.txt"; do [ -f "$f" ] && echo "    $(basename "$f"): $(tail -1 "$f")"; done
+	grep -E '^(cpu|mem|proc|disk|temp|net tl-tross/wan1 )' "$dir/summary.txt" | sed 's/^/    /' || true
+	echo "    conntrack max: $(sort -n "$dir/conntrack.txt" | tail -1)"
+}
+
+for mode in $modes; do
+	case $mode in
+	bare)
+		S "$lab" simple-route isp1 >/dev/null
+		;;
+	daemon)
+		S "$lab" simple-route off >/dev/null
+		rm -rf "$out/data"
+		S ip netns exec tl-tross "$bin/trossd" -config configs/lab.yaml -data-dir "$out/data" >"$out/trossd.log" 2>&1 &
+		for _ in $(seq 1 60); do
+			S ip netns exec tl-tross wget -qO- "$api/api/links" 2>/dev/null | grep -q '"id":"isp1"[^}]*"state":"up"' && break
+			sleep 1
+		done
+		S ip netns exec tl-tross wget -qO- "$api/api/links" | grep -q '"id":"isp1"[^}]*"state":"up"' || { echo "daemon did not bring isp1 up"; exit 1; }
+		;;
+	*) echo "unknown mode $mode"; exit 2 ;;
+	esac
+	for sc in "${scenarios[@]}"; do run_scenario "$mode" "$sc"; done
+	if [ "$mode" = daemon ]; then
+		mkdir -p "$out/daemon-api"
+		for p in metrics events "system/stats?res=minute" "links/isp1/stats?res=minute" "logs?level=warn"; do
+			S ip netns exec tl-tross wget -qO- "$api/api/$p" >"$out/daemon-api/$(echo "$p" | tr '/?=&' '____').json" || true
+		done
+		S pkill -INT -x trossd || true
+		sleep 2
+		S ls -l "$out/data" >"$out/daemon-api/data-dir.txt"
+	fi
+done
+
+cleanup
+trap - EXIT
+after=$(snap)
+if [ "$before" != "$after" ]; then
+	echo "HOST NETWORK CHANGED: $before -> $after"
+	exit 1
+fi
+echo "LOAD DONE: $out"

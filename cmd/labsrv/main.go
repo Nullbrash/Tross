@@ -5,6 +5,7 @@
 //	    имитация страницы авторизации (captive portal) на отдельном порту
 //	labsrv udpping -target 203.0.113.10:9000 -rate 30 -n 90
 //	labsrv upload -url http://203.0.113.10/sink -n 50000000
+//	labsrv load -url http://203.0.113.10 -down 150 -up 50 -chunk 1000000 -churn -duration 60s
 //
 // UDP-пинг имитирует игровой трафик: мелкие пакеты с постоянной частотой;
 // печатает RTT (мин/сред/макс), джиттер и потери.
@@ -28,7 +29,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: labsrv serve|udpping [flags]")
+		fmt.Fprintln(os.Stderr, "usage: labsrv serve|udpping|upload|load [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -39,6 +40,8 @@ func main() {
 		err = udpping(os.Args[2:])
 	case "upload":
 		err = upload(os.Args[2:])
+	case "load":
+		err = load(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}

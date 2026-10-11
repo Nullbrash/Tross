@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -14,6 +15,8 @@ import (
 	"tross/core/event"
 	"tross/core/model"
 	"tross/internal/linkmon"
+	"tross/internal/logring"
+	"tross/internal/store"
 )
 
 func newTestServer(t *testing.T) http.Handler {
@@ -23,9 +26,25 @@ func newTestServer(t *testing.T) http.Handler {
 		{ID: "lte", Name: "LTE", Kind: model.LinkKindLTE, Interface: "eth2", Metered: true},
 	}, event.NewBus(), time.Second, 1)
 	mon.Tick()
+	st, err := store.Open("", store.DefaultRetention())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	at := time.Now().Add(-time.Hour).Truncate(time.Minute)
+	_ = st.AppendSamples(context.Background(),
+		[]store.LinkSample{{At: at, Link: "isp1", State: model.LinkStateUp, RTT: 5 * time.Millisecond, RxBytes: 100}},
+		&store.SystemSample{At: at, CPUBusy: 12})
+	_ = st.AppendEvent(context.Background(), event.Event{Topic: event.TopicDaemon, Time: at, Data: "started"})
+	logs := logring.New(10)
+	log := slog.New(logs.Wrap(slog.NewTextHandler(io.Discard, nil)))
+	log.Info("hello", "k", "v")
+	log.Warn("careful")
 	return New(Options{
-		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:             log,
 		Monitor:         mon,
+		Store:           st,
+		Logs:            logs,
 		AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("192.168.1.0/24")},
 		Version:         "test",
 		DryRun:          true,
@@ -110,5 +129,60 @@ func TestRoutingEdges(t *testing.T) {
 	rec := do(h, http.MethodGet, "/", "127.0.0.1:1")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<title>Tross</title>") {
 		t.Errorf("index: status = %d", rec.Code)
+	}
+}
+
+func TestEventsAndLogs(t *testing.T) {
+	h := newTestServer(t)
+	rec := do(h, http.MethodGet, "/api/events?limit=5", "127.0.0.1:1")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"topic":"daemon"`) || !strings.Contains(rec.Body.String(), `"data":"started"`) {
+		t.Fatalf("events: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(h, http.MethodGet, "/api/events?since=yesterday", "127.0.0.1:1"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad since: %d", rec.Code)
+	}
+	rec = do(h, http.MethodGet, "/api/logs?level=warn", "127.0.0.1:1")
+	var logs struct{ Logs []struct{ Msg, Level string } }
+	_ = json.Unmarshal(rec.Body.Bytes(), &logs)
+	if rec.Code != http.StatusOK || len(logs.Logs) != 1 || logs.Logs[0].Msg != "careful" {
+		t.Fatalf("logs: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(h, http.MethodGet, "/api/logs?level=loud", "127.0.0.1:1"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad level: %d", rec.Code)
+	}
+}
+
+func TestStatsAndMetrics(t *testing.T) {
+	h := newTestServer(t)
+	rec := do(h, http.MethodGet, "/api/links/isp1/stats?res=minute", "127.0.0.1:1")
+	var body struct {
+		Stats []struct {
+			RTT float64 `json:"rtt_avg_ms"`
+			Rx  uint64  `json:"rx_bytes"`
+		}
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != http.StatusOK || len(body.Stats) != 1 || body.Stats[0].RTT != 5 || body.Stats[0].Rx != 100 {
+		t.Fatalf("link stats: %d %s", rec.Code, rec.Body.String())
+	}
+	// Сводок ещё нет — пустой список, а не null.
+	if rec := do(h, http.MethodGet, "/api/links/isp1/stats", "127.0.0.1:1"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"stats":[]`) {
+		t.Fatalf("hour stats: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(h, http.MethodGet, "/api/system/stats?res=minute", "127.0.0.1:1"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"cpu_avg":12`) {
+		t.Fatalf("system stats: %d %s", rec.Code, rec.Body.String())
+	}
+	for path, want := range map[string]int{
+		"/api/links/nope/stats":                                  http.StatusNotFound,
+		"/api/links/isp1/stats?res=week":                         http.StatusBadRequest,
+		"/api/system/stats?res=minute&from=2026-01-01T00:00:00Z": http.StatusBadRequest, // окно больше недели
+	} {
+		if rec := do(h, http.MethodGet, path, "127.0.0.1:1"); rec.Code != want {
+			t.Errorf("%s: %d, want %d", path, rec.Code, want)
+		}
+	}
+	rec = do(h, http.MethodGet, "/api/metrics", "127.0.0.1:1")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"goroutines"`) || !strings.Contains(rec.Body.String(), `"rx_bytes"`) {
+		t.Fatalf("metrics: %d %s", rec.Code, rec.Body.String())
 	}
 }

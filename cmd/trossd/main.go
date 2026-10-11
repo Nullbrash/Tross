@@ -13,6 +13,7 @@ import (
 
 	"tross/internal/config"
 	"tross/internal/daemon"
+	"tross/internal/logring"
 )
 
 // version подставляется при сборке: -ldflags "-X main.version=…".
@@ -23,6 +24,7 @@ func main() { os.Exit(run()) }
 func run() int {
 	configPath := flag.String("config", "/etc/tross/config.yaml", "path to config file")
 	dryRun := flag.Bool("dry-run", false, "force dry-run mode: change nothing in the system")
+	dataDir := flag.String("data-dir", "", "override daemon.data_dir from the config")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -39,8 +41,12 @@ func run() int {
 	if *dryRun {
 		cfg.Daemon.DryRun = true
 	}
+	if *dataDir != "" {
+		cfg.Daemon.DataDir = *dataDir
+	}
 
-	log, err := newLogger(os.Stderr, cfg.Log)
+	logs := logring.New(cfg.Log.RingSize)
+	log, err := newLogger(os.Stderr, cfg.Log, logs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "trossd:", err)
 		return 2
@@ -49,21 +55,22 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := daemon.Run(ctx, daemon.Options{Config: cfg, Log: log, Version: version}); err != nil {
+	if err := daemon.Run(ctx, daemon.Options{Config: cfg, Log: log, Logs: logs, Version: version}); err != nil {
 		log.Error("trossd failed", "err", err)
 		return 1
 	}
 	return 0
 }
 
-func newLogger(w io.Writer, c config.Log) (*slog.Logger, error) {
+func newLogger(w io.Writer, c config.Log, ring *logring.Ring) (*slog.Logger, error) {
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(c.Level)); err != nil {
 		return nil, err
 	}
 	opts := &slog.HandlerOptions{Level: lvl}
+	var h slog.Handler = slog.NewTextHandler(w, opts)
 	if c.Format == "json" {
-		return slog.New(slog.NewJSONHandler(w, opts)), nil
+		h = slog.NewJSONHandler(w, opts)
 	}
-	return slog.New(slog.NewTextHandler(w, opts)), nil
+	return slog.New(ring.Wrap(h)), nil
 }

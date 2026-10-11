@@ -1,6 +1,8 @@
 package measure
 
 import (
+	"tross/internal/procfs"
+
 	"math"
 	"strings"
 	"testing"
@@ -12,11 +14,11 @@ func TestDiff(t *testing.T) {
 	mk := func(sec int, idle, user, sect, ticks, rx uint64) Snapshot {
 		return Snapshot{
 			At:       t0.Add(time.Duration(sec) * time.Second),
-			CPU:      CPUTimes{User: user, Idle: idle},
-			Mem:      Mem{TotalKB: 4 << 20, AvailableKB: 3 << 20},
+			CPU:      procfs.CPUTimes{User: user, Idle: idle},
+			Mem:      procfs.Mem{TotalKB: 4 << 20, AvailableKB: 3 << 20},
 			DiskSect: sect,
 			ProcPID:  42,
-			Proc:     ProcStat{UTime: ticks, RSSKB: 20 << 10},
+			Proc:     procfs.ProcStat{UTime: ticks, RSSKB: 20 << 10},
 			Net:      map[string][]IfaceBytes{"tl-tross": {{Name: "wan1", RxBytes: rx}}},
 		}
 	}
@@ -58,8 +60,8 @@ func TestDiff(t *testing.T) {
 
 func TestDiffProcessRestart(t *testing.T) {
 	t0 := time.Now()
-	prev := Snapshot{At: t0, ProcPID: 1, Proc: ProcStat{UTime: 1000}}
-	cur := Snapshot{At: t0.Add(time.Second), ProcPID: 2, Proc: ProcStat{UTime: 5, RSSKB: 1024}}
+	prev := Snapshot{At: t0, ProcPID: 1, Proc: procfs.ProcStat{UTime: 1000}}
+	cur := Snapshot{At: t0.Add(time.Second), ProcPID: 2, Proc: procfs.ProcStat{UTime: 5, RSSKB: 1024}}
 	r, _ := Diff(prev, prev, cur)
 	// Новый PID: тики не сравнимы — ЦП не считаем, иначе получим мусор от переполнения.
 	if r.ProcCPUPct != 0 || r.ProcRSSMB != 1 {
