@@ -5,6 +5,7 @@
 #   scripts/lab-sync            только копирование
 #   scripts/lab-sync build      + go build ./cmd/... в ~/tross/bin
 #   scripts/lab-sync test       + build + go test ./...
+#   scripts/lab-sync itest [N]  + build + интеграционные тесты на стенде (N прогонов)
 #
 # Адрес стенда — TROSS_LAB_HOST (и ключ TROSS_LAB_KEY) из окружения или из
 # .lab.env в корне репозитория (файл вне git).
@@ -31,5 +32,6 @@ case ${1:-} in
 	"") ;;
 	build) "${remote[@]}" "$gobuild && ls bin" ;;
 	test) "${remote[@]}" "$gobuild && go vet ./... && go test ./..." ;;
-	*) echo "usage: lab-sync [build|test]" >&2; exit 2 ;;
+	itest) "${remote[@]}" "$gobuild && scripts/lab-itest ${2:-2}" ;;
+	*) echo "usage: lab-sync [build|test|itest [N]]" >&2; exit 2 ;;
 esac

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"tross/core/model"
+	"tross/internal/dataplane"
 )
 
 const minimal = `
@@ -75,6 +76,12 @@ func TestDefaults(t *testing.T) {
 	}
 	if !*cfg.DNS.FirefoxCanaryNXDomain || cfg.Devices.DefaultDNSMode != model.DNSObserve {
 		t.Error("dns/devices defaults not applied")
+	}
+}
+
+func TestLinkMarkMaskMatchesDataplane(t *testing.T) {
+	if LinkMarkMask != dataplane.LinkMarkMask {
+		t.Fatalf("config %#x != dataplane %#x: link marks would not match ip rules", LinkMarkMask, dataplane.LinkMarkMask)
 	}
 }
 

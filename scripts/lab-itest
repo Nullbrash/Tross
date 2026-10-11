@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Интеграционные тесты на закрытом стенде. Запуск на стенде от обычного
+# пользователя (sudo без пароля): сборка — от пользователя, стенд и тесты —
+# от root. Каждый прогон — с чистого `lab-netns up`; в конце проверяется,
+# что настоящая сеть машины не изменилась.
+#
+#   scripts/lab-itest [прогонов=2] [-test.run Regexp]
+#   LAB_MEASURE_OUT=~/lab-results/<дата>-x scripts/lab-itest 1 -test.run Measure   замеры
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+export PATH=$HOME/sdk/go/bin:$PATH
+runs=${1:-2}
+shift || true
+extra=("$@")
+
+pkgs=$(grep -rl --include='*_integration_test.go' -e '//go:build' . | xargs -r -n1 dirname | sort -u)
+[ -n "$pkgs" ] || { echo "no integration tests"; exit 0; }
+mkdir -p bin/itest
+bins=()
+for p in $pkgs; do
+	b="bin/itest/$(echo "${p#./}" | tr / _).test"
+	go test -c -tags integration -o "$b" "$p"
+	bins+=("$b")
+done
+
+snap() { sudo -n sh -c '{ ip -4 route show table all; ip rule; ip -br link; nft list ruleset; } | md5sum'; }
+before=$(snap)
+lab=$PWD/scripts/lab-netns
+fails=0
+for r in $(seq 1 "$runs"); do
+	echo "=== run $r/$runs"
+	sudo -n "$lab" down >/dev/null
+	sudo -n "$lab" up >/dev/null
+	for b in "${bins[@]}"; do
+		if ! sudo -n ip netns exec tl-tross env LAB_NETNS="$lab" LAB_MEASURE_OUT="${LAB_MEASURE_OUT:-}" \
+			"$b" -test.v -test.count=1 "${extra[@]}"; then
+			fails=$((fails + 1))
+		fi
+	done
+	sudo -n "$lab" down >/dev/null
+done
+after=$(snap)
+if [ "$before" != "$after" ]; then
+	echo "HOST NETWORK CHANGED: $before -> $after"
+	fails=$((fails + 1))
+fi
+if [ "$fails" = 0 ]; then echo "ITEST PASSED ($runs runs)"; else echo "ITEST FAILED: $fails"; exit 1; fi

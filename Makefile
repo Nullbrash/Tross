@@ -9,7 +9,7 @@ STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.1
 LINT_TOOLCHAIN := go1.26.9
 TOOLS       := $(CURDIR)/bin/tools
 
-.PHONY: all build build-linux run test lint vet vet-linux staticcheck fmt fmt-check tidy clean lab-sync lab-test
+.PHONY: all build build-linux run test lint vet vet-linux staticcheck fmt fmt-check tidy clean lab-sync lab-test lab-itest
 
 all: lint test build
 
@@ -63,6 +63,9 @@ lab-sync:
 
 lab-test:
 	scripts/lab-sync test
+
+lab-itest:
+	scripts/lab-sync itest
 
 clean:
 	rm -rf bin
