@@ -20,6 +20,12 @@ make test
 make lint          # gofmt, go vet (хост и linux), staticcheck
 ```
 
+## Лицензия
+
+Tross распространяется под [GNU General Public License v3.0](LICENSE).
+Сторонние компоненты, которые демон запускает отдельными программами
+(mihomo, zapret), — под собственными лицензиями.
+
 ## Запуск в «сухом» режиме
 
 ```sh
