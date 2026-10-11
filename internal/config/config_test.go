@@ -79,6 +79,39 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadLabConfig(t *testing.T) {
+	cfg, err := Load("../../configs/lab.yaml")
+	if err != nil {
+		t.Fatalf("lab config must be valid: %v", err)
+	}
+	g, wl := cfg.ProbeTargets(cfg.Links[2])
+	if len(g) != 2 || len(wl) != 1 || wl[0].String() != "203.0.113.3" {
+		t.Fatalf("lte targets: general %v, whitelist %v", g, wl)
+	}
+	g, wl = cfg.ProbeTargets(cfg.Links[0])
+	if len(g) != 3 || wl != nil {
+		t.Fatalf("isp1 without whitelist detection must probe all targets: %v %v", g, wl)
+	}
+}
+
+func TestSpeedTestValidation(t *testing.T) {
+	cfg, err := Parse([]byte(minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, m, ok := cfg.Monitor.SpeedTest.AtClock(); !ok || h != 4 || m != 0 {
+		t.Fatalf("default speedtest.at = %d:%d %v", h, m, ok)
+	}
+	if _, err := Parse([]byte(minimal + "monitor: { speedtest: { at: '25:00' } }\n")); err == nil || !strings.Contains(err.Error(), "speedtest.at") {
+		t.Fatalf("bad time must fail, got %v", err)
+	}
+	only := minimal + "monitor: { targets: [77.88.8.8], whitelist_targets: [77.88.8.8] }\n"
+	only = strings.Replace(only, "interface: eth2 }", "interface: eth2, whitelist_detection: true }", 1)
+	if _, err := Parse([]byte(only)); err == nil || !strings.Contains(err.Error(), "no general probe targets") {
+		t.Fatalf("whitelist-only targets must fail, got %v", err)
+	}
+}
+
 func TestLinkMarkMaskMatchesDataplane(t *testing.T) {
 	if LinkMarkMask != dataplane.LinkMarkMask {
 		t.Fatalf("config %#x != dataplane %#x: link marks would not match ip rules", LinkMarkMask, dataplane.LinkMarkMask)

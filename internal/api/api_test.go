@@ -84,6 +84,21 @@ func TestRejectsOutsideNetworks(t *testing.T) {
 	}
 }
 
+func TestSpeedTest(t *testing.T) {
+	h := newTestServer(t)
+	rec := do(h, http.MethodPost, "/api/links/isp1/speedtest", "127.0.0.1:1")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"down_bps":500000000`) {
+		t.Fatalf("speedtest: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := do(h, http.MethodPost, "/api/links/nope/speedtest", "127.0.0.1:1"); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown link: %d", rec.Code)
+	}
+	// GET попадает в общий «GET /api/» (404), а не в замер — трафик не тратится.
+	if rec := do(h, http.MethodGet, "/api/links/isp1/speedtest", "127.0.0.1:1"); rec.Code != http.StatusNotFound {
+		t.Fatalf("GET speedtest must not run the test, got %d", rec.Code)
+	}
+}
+
 func TestRoutingEdges(t *testing.T) {
 	h := newTestServer(t)
 	if rec := do(h, http.MethodGet, "/api/nope", "127.0.0.1:1"); rec.Code != http.StatusNotFound {

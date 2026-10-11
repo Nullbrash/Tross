@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"tross/core/event"
+	"tross/core/linkhealth"
 	"tross/internal/api"
 	"tross/internal/config"
 	"tross/internal/dataplane"
@@ -55,10 +56,10 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 
-	if !cfg.Daemon.DryRun {
-		return errors.New("real link monitor is not implemented yet (stage 1); run with dry_run")
+	mon, err := newMonitor(cfg, log, bus)
+	if err != nil {
+		return err
 	}
-	mon := linkmon.NewFake(cfg.ModelLinks(), bus, cfg.Monitor.Interval, uint64(time.Now().UnixNano()))
 
 	srv := &http.Server{
 		Handler: api.New(api.Options{
@@ -123,6 +124,38 @@ func newDataplane(cfg *config.Config, log *slog.Logger) (dataplane.Dataplane, er
 		return dataplane.NewFake(log), nil
 	}
 	return dataplane.NewSystem(log)
+}
+
+func newMonitor(cfg *config.Config, log *slog.Logger, bus event.EventBus) (linkmon.LinkMonitor, error) {
+	if cfg.Daemon.DryRun {
+		return linkmon.NewFake(cfg.ModelLinks(), bus, cfg.Monitor.Interval, uint64(time.Now().UnixNano())), nil
+	}
+	m := cfg.Monitor
+	params := linkhealth.DefaultParams()
+	params.Window, params.FailAfter, params.RecoverAfter = m.Window, m.FailAfter, m.RecoverAfter
+	params.HTTPFailAfter = m.HTTPCheck.FailAfter
+	hh, mm, _ := m.SpeedTest.AtClock()
+	probes := make([]linkmon.LinkProbe, 0, len(cfg.Links))
+	for _, l := range cfg.Links {
+		general, wl := cfg.ProbeTargets(l)
+		probes = append(probes, linkmon.LinkProbe{Link: l.Model(), Mark: l.FwMark, Targets: general, Whitelist: wl})
+	}
+	return linkmon.NewSystem(linkmon.Options{
+		Log: log, Bus: bus, Interval: m.Interval, Timeout: m.Timeout, Params: params, TCPPort: m.TCPFallbackPort,
+		HTTPCheck: httpCheckOptions(m.HTTPCheck),
+		SpeedTest: linkmon.SpeedTestOptions{URLs: m.SpeedTest.URLs, Hour: hh, Minute: mm, Duration: m.SpeedTest.Duration, MaxBytes: m.SpeedTest.MaxBytes},
+	}, probes)
+}
+
+func httpCheckOptions(h config.HTTPCheck) linkmon.HTTPCheckOptions {
+	if !*h.Enabled {
+		return linkmon.HTTPCheckOptions{}
+	}
+	o := linkmon.HTTPCheckOptions{Interval: h.Interval, Timeout: h.Timeout, DNS: h.DNS}
+	for _, u := range h.URLs {
+		o.URLs = append(o.URLs, linkmon.HTTPCheckURL{URL: u.URL, Status: u.Status, Body: u.Body})
+	}
+	return o
 }
 
 func dataplaneSpec(cfg *config.Config) dataplane.Spec {

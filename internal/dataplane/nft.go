@@ -41,6 +41,12 @@ func renderBase(spec Spec) string {
 	fmt.Fprintf(&b, "\t\tiifname %s ct state new jump choose\n", quote(spec.LANInterface))
 	b.WriteString("\t}\n")
 	b.WriteString("\tchain choose {\n\t}\n")
+	// Собственный трафик машины с меткой канала на сокете (пробы монитора,
+	// замер скорости, позже — DNS и прокси-ядро): метка сохраняется в
+	// соединении, иначе ответ придёт без неё и rp_filter его отбросит.
+	b.WriteString("\tchain output {\n\t\ttype route hook output priority mangle; policy accept;\n")
+	fmt.Fprintf(&b, "\t\tmeta mark and %#x != 0 ct mark set meta mark and %#x\n", LinkMarkMask, LinkMarkMask)
+	b.WriteString("\t}\n")
 	b.WriteString("\tchain postrouting {\n\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
 	if len(wans) > 0 {
 		fmt.Fprintf(&b, "\t\toifname { %s } masquerade\n", strings.Join(wans, ", "))

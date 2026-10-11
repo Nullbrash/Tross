@@ -114,7 +114,7 @@ netem() {
 
 start_servers() {
 	[ -x "$BIN/labsrv" ] || die "no $BIN/labsrv (build: go build -o bin/ ./cmd/...)"
-	nsx tl-inet setsid "$BIN/labsrv" serve -http "$SRV_IP:80" -udp "$SRV_IP:9000" \
+	nsx tl-inet setsid "$BIN/labsrv" serve -http "$SRV_IP:80" -udp "$SRV_IP:9000" -portal "$SRV_IP:8080" \
 		> "$STATE/labsrv.log" 2>&1 < /dev/null &
 	echo $! > "$STATE/labsrv.pid"
 	if command -v iperf3 >/dev/null; then

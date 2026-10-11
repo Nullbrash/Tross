@@ -6,14 +6,17 @@ package dataplane
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -298,6 +301,38 @@ func TestMeasureForwarding(t *testing.T) {
 			if strings.HasPrefix(line, "cpu") || strings.HasPrefix(line, "temp") {
 				t.Logf("measure %s: %s", dir, strings.TrimSpace(line))
 			}
+		}
+	}
+}
+
+// TestLocalMarkedTrafficGetsReplies — собственный трафик машины с меткой канала
+// на сокете (пробы монитора, DNS, прокси-ядро) получает ответы через этот
+// канал: без сохранения метки в conntrack rp_filter отбрасывает ответы.
+func TestLocalMarkedTrafficGetsReplies(t *testing.T) {
+	ctx := context.Background()
+	s := newSystem(t)
+	if err := s.Setup(ctx, standSpec()); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range standSpec().Links {
+		before := rxBytes(t, l.Link.Interface)
+		d := net.Dialer{Timeout: 3 * time.Second, Control: func(_, _ string, c syscall.RawConn) error {
+			var serr error
+			err := c.Control(func(fd uintptr) { serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(l.FwMark)) })
+			return errors.Join(err, serr)
+		}}
+		c, err := d.DialContext(ctx, "tcp4", srv+":80")
+		if err != nil {
+			t.Fatalf("%s: marked local connection failed: %v", l.Link.ID, err)
+		}
+		_, _ = c.Write([]byte("GET / HTTP/1.0\r\n\r\n"))
+		reply, _ := io.ReadAll(c)
+		c.Close()
+		if !strings.Contains(string(reply), "ok") {
+			t.Fatalf("%s: no HTTP reply: %q", l.Link.ID, reply)
+		}
+		if rxBytes(t, l.Link.Interface) <= before {
+			t.Fatalf("%s: reply did not come through %s", l.Link.ID, l.Link.Interface)
 		}
 	}
 }

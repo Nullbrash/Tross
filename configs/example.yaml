@@ -62,9 +62,39 @@ monitor:
   interval: 2s
   timeout: 1s
   window: 30                        # проб в окне расчёта задержки/джиттера/потерь
-  fail_after: 3                     # гистерезис: плохих окон подряд до down
-  recover_after: 10                 # хороших подряд до возврата в up
-  throughput_interval: 6h           # реальное измерение скорости
+  fail_after: 3                     # раундов без ответов подряд до down (~6 с)
+  recover_after: 10                 # удачных подряд до возврата в up (~20 с)
+  # Цели, доступные даже в режиме «белых списков» оператора; у каналов с
+  # whitelist_detection исключаются из общих целей (по умолчанию: пусто).
+  whitelist_targets: [77.88.8.8]
+  tcp_fallback_port: 443            # запасная проба, если ICMP режется
+  # Проверка «настоящего» интернета: ping может идти, а HTTP — резаться или
+  # подменяться (страница авторизации, «белые списки»). fail_after неудач
+  # подряд → канал restricted. Запросы и DNS — через сам канал, без
+  # перехода по перенаправлениям. Достаточно ответа одного адреса.
+  http_check:
+    enabled: true
+    interval: 30s
+    timeout: 5s
+    fail_after: 2
+    dns: [1.1.1.1, 8.8.8.8]
+    urls:
+      - { url: "http://cp.cloudflare.com/generate_204", status: 204 }
+      - { url: "https://www.gstatic.com/generate_204", status: 204 }
+      - { url: "http://detectportal.firefox.com/success.txt", status: 200, body: success }
+      - { url: "http://www.msftconnecttest.com/connecttest.txt", status: 200, body: "Microsoft Connect Test" }
+  # Скорость: всегда пассивно по реальному трафику; активный тест — на
+  # проводных раз в сутки в `at`, на лимитированных (LTE) — только по команде.
+  speedtest:
+    # Один ответ сервера ограничен (Cloudflare: 403 на >= 100 МБ) — тест
+    # повторяет запросы в 4 потока до duration или max_bytes. Адреса
+    # пробуются по порядку: следующий — если предыдущий не отдал данных.
+    urls:
+      - https://speed.cloudflare.com/__down?bytes=50000000
+      - https://web1.cachefly.net/speedtest/downloading
+    at: "04:00"
+    duration: 10s
+    max_bytes: 200000000
 
 # Классы трафика и их политики.
 #   selector:   lowest_latency | best_throughput | balanced | ordered

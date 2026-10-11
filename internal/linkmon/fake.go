@@ -2,6 +2,7 @@ package linkmon
 
 import (
 	"context"
+	"fmt"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -126,6 +127,16 @@ func (f *Fake) Snapshot() []model.LinkStatus {
 		out = append(out, model.LinkStatus{Link: l, Health: f.health[l.ID]})
 	}
 	return out
+}
+
+func (f *Fake) SpeedTest(_ context.Context, id model.LinkID) (model.Throughput, error) {
+	st, ok := f.Status(id)
+	if !ok {
+		return model.Throughput{}, fmt.Errorf("unknown link %q", id)
+	}
+	th := st.Health.Throughput
+	th.MeasuredAt = f.now()
+	return th, nil
 }
 
 func (f *Fake) Status(id model.LinkID) (model.LinkStatus, bool) {

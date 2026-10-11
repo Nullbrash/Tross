@@ -27,6 +27,8 @@ func TestRenderBase(t *testing.T) {
 		"ct mark and 0xff00 != 0 meta mark set ct mark and 0xff00 return",
 		`iifname "lan" ct state new jump choose`,
 		"chain choose {\n\t}",
+		"type route hook output priority mangle;",
+		"meta mark and 0xff00 != 0 ct mark set meta mark and 0xff00",
 		`oifname { "wan1", "wan2", "wan3" } masquerade`,
 	} {
 		if !strings.Contains(got, want) {

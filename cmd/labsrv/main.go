@@ -1,6 +1,8 @@
 // Команда labsrv — тестовые серверы «интернета» стенда и клиент UDP-пинга.
 //
-//	labsrv serve -http :80 -udp :9000        HTTP (/, /bytes?n=, /sink) и UDP-эхо
+//	labsrv serve -http :80 -udp :9000 [-portal :8080]
+//	    HTTP (/, /generate_204, /success.txt, /bytes?n=, /sink), UDP-эхо,
+//	    имитация страницы авторизации (captive portal) на отдельном порту
 //	labsrv udpping -target 203.0.113.10:9000 -rate 30 -n 90
 //
 // UDP-пинг имитирует игровой трафик: мелкие пакеты с постоянной частотой;
@@ -51,10 +53,23 @@ func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	httpAddr := fs.String("http", ":80", "HTTP listen address")
 	udpAddr := fs.String("udp", ":9000", "UDP echo listen address")
+	portalAddr := fs.String("portal", "", "captive-portal imitation listen address (any path → 200 HTML)")
 	_ = fs.Parse(args)
+
+	if *portalAddr != "" {
+		portal := &http.Server{Addr: *portalAddr, ReadHeaderTimeout: 10 * time.Second,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				io.WriteString(w, "<html><body>Please log in to use the network</body></html>\n")
+			})}
+		go func() { log.Printf("portal: %v", portal.ListenAndServe()) }()
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
+	// Как у настоящих проверок подключения (gstatic, firefox).
+	mux.HandleFunc("GET /generate_204", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	mux.HandleFunc("GET /success.txt", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "success\n") })
 	// /bytes?n=N — отдать N байт (замер загрузки).
 	mux.HandleFunc("GET /bytes", func(w http.ResponseWriter, r *http.Request) {
 		n, err := strconv.ParseInt(r.URL.Query().Get("n"), 10, 64)

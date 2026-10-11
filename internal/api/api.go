@@ -33,6 +33,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/links", s.handleLinks)
+	mux.HandleFunc("POST /api/links/{id}/speedtest", s.handleSpeedTest)
 	// С методом GET: иначе этот шаблон перехватил бы POST /api/health вместо ответа 405.
 	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -117,6 +118,22 @@ func (s *Server) handleLinks(w http.ResponseWriter, _ *http.Request) {
 		out = append(out, toLinkDTO(st))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"links": out})
+}
+
+// handleSpeedTest — активный замер по команде; на лимитированных каналах это
+// единственный способ его запустить (автоматически они не тестируются).
+func (s *Server) handleSpeedTest(w http.ResponseWriter, r *http.Request) {
+	id := model.LinkID(r.PathValue("id"))
+	if _, ok := s.opts.Monitor.Status(id); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown link"})
+		return
+	}
+	th, err := s.opts.Monitor.SpeedTest(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"link": id, "down_bps": th.DownBps, "measured_at": th.MeasuredAt})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

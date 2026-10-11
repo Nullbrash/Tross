@@ -174,9 +174,51 @@ func (c *Config) validateMonitor(p *problems) {
 	if m.Window < 1 || m.FailAfter < 1 || m.RecoverAfter < 1 {
 		p.add("monitor", "window, fail_after and recover_after must be >= 1")
 	}
-	if m.ThroughputInterval <= 0 {
-		p.add("monitor.throughput_interval", "must be positive")
+	for _, a := range m.WhitelistTargets {
+		if !a.Is4() {
+			p.add("monitor.whitelist_targets", "%s: only IPv4 is supported", a)
+		}
 	}
+	if m.TCPFallbackPort == 0 {
+		p.add("monitor.tcp_fallback_port", "must be non-zero")
+	}
+	for i, s := range m.SpeedTest.URLs {
+		if !httpURL(s) {
+			p.add(fmt.Sprintf("monitor.speedtest.urls[%d]", i), "want http(s) URL, got %q", s)
+		}
+	}
+	h := m.HTTPCheck
+	if *h.Enabled {
+		if h.Interval < m.Interval || h.Timeout <= 0 || h.FailAfter < 1 {
+			p.add("monitor.http_check", "need interval >= monitor.interval, timeout > 0, fail_after >= 1")
+		}
+		for _, a := range h.DNS {
+			if !a.Is4() {
+				p.add("monitor.http_check.dns", "%s: only IPv4 is supported", a)
+			}
+		}
+		for i, u := range h.URLs {
+			if !httpURL(u.URL) || u.Status < 100 || u.Status > 599 {
+				p.add(fmt.Sprintf("monitor.http_check.urls[%d]", i), "want http(s) URL and HTTP status, got %q %d", u.URL, u.Status)
+			}
+		}
+	}
+	if _, _, ok := m.SpeedTest.AtClock(); !ok {
+		p.add("monitor.speedtest.at", "want HH:MM, got %q", m.SpeedTest.At)
+	}
+	if m.SpeedTest.Duration <= 0 || m.SpeedTest.MaxBytes <= 0 {
+		p.add("monitor.speedtest", "duration and max_bytes must be positive")
+	}
+	for i, l := range c.Links {
+		if general, _ := c.ProbeTargets(l); len(general) == 0 {
+			p.add(fmt.Sprintf("links[%d]", i), "no general probe targets left after excluding whitelist_targets")
+		}
+	}
+}
+
+func httpURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https")
 }
 
 func (c *Config) linkExists(id model.LinkID) bool {

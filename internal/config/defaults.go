@@ -61,7 +61,34 @@ func (c *Config) applyDefaults() {
 	orDefault(&m.Window, 30)
 	orDefault(&m.FailAfter, 3)
 	orDefault(&m.RecoverAfter, 10)
-	orDefault(&m.ThroughputInterval, 6*time.Hour)
+	orDefault(&m.TCPFallbackPort, 443)
+	if len(m.SpeedTest.URLs) == 0 {
+		m.SpeedTest.URLs = []string{
+			"https://speed.cloudflare.com/__down?bytes=50000000",
+			"https://web1.cachefly.net/speedtest/downloading",
+		}
+	}
+	h := &m.HTTPCheck
+	if h.Enabled == nil {
+		h.Enabled = ptr(true)
+	}
+	orDefault(&h.Interval, 30*time.Second)
+	orDefault(&h.Timeout, 5*time.Second)
+	orDefault(&h.FailAfter, 2)
+	if len(h.DNS) == 0 {
+		h.DNS = []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("8.8.8.8")}
+	}
+	if len(h.URLs) == 0 {
+		h.URLs = []HTTPCheckURL{
+			{URL: "http://cp.cloudflare.com/generate_204", Status: 204},
+			{URL: "https://www.gstatic.com/generate_204", Status: 204},
+			{URL: "http://detectportal.firefox.com/success.txt", Status: 200, Body: "success"},
+			{URL: "http://www.msftconnecttest.com/connecttest.txt", Status: 200, Body: "Microsoft Connect Test"},
+		}
+	}
+	orDefault(&m.SpeedTest.At, "04:00")
+	orDefault(&m.SpeedTest.Duration, 10*time.Second)
+	orDefault(&m.SpeedTest.MaxBytes, 200_000_000)
 
 	if len(c.Classes) == 0 {
 		c.Classes = []Class{{ID: model.ClassDefault}}

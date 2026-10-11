@@ -17,4 +17,7 @@ type LinkMonitor interface {
 	// Snapshot — состояние всех каналов в порядке конфигурации.
 	Snapshot() []model.LinkStatus
 	Status(id model.LinkID) (model.LinkStatus, bool)
+	// SpeedTest — активный замер скорости по команде (тратит трафик канала,
+	// на лимитированных каналах автоматически не запускается).
+	SpeedTest(ctx context.Context, id model.LinkID) (model.Throughput, error)
 }

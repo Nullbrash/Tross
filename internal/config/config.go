@@ -93,11 +93,76 @@ type Monitor struct {
 	Timeout  time.Duration `yaml:"timeout"`
 	// Window — сколько последних проб учитывать в задержке, джиттере и потерях.
 	Window int `yaml:"window"`
-	// FailAfter / RecoverAfter — гистерезис: подряд неудачных окон до «down»
+	// FailAfter / RecoverAfter — гистерезис: подряд неудачных раундов до «down»
 	// и подряд удачных до возврата в «up».
-	FailAfter          int           `yaml:"fail_after"`
-	RecoverAfter       int           `yaml:"recover_after"`
-	ThroughputInterval time.Duration `yaml:"throughput_interval"`
+	FailAfter    int `yaml:"fail_after"`
+	RecoverAfter int `yaml:"recover_after"`
+	// WhitelistTargets — цели, доступные и в режиме «белых списков» оператора;
+	// у каналов с whitelist_detection исключаются из общих целей.
+	WhitelistTargets []netip.Addr `yaml:"whitelist_targets"`
+	// TCPFallbackPort — запасная проба, если ICMP режется по пути.
+	TCPFallbackPort uint16    `yaml:"tcp_fallback_port"`
+	HTTPCheck       HTTPCheck `yaml:"http_check"`
+	SpeedTest       SpeedTest `yaml:"speedtest"`
+}
+
+// HTTPCheck — проверка «настоящего» интернета через канал: ping может
+// проходить, а HTTP — резаться или подменяться (captive portal, «белые
+// списки»). Неудача FailAfter раз подряд → канал restricted.
+type HTTPCheck struct {
+	Enabled   *bool          `yaml:"enabled"`
+	Interval  time.Duration  `yaml:"interval"`
+	Timeout   time.Duration  `yaml:"timeout"`
+	FailAfter int            `yaml:"fail_after"`
+	DNS       []netip.Addr   `yaml:"dns"` // резолверы, к которым идут запросы через канал
+	URLs      []HTTPCheckURL `yaml:"urls"`
+}
+
+// HTTPCheckURL — адрес и ожидаемый ответ; Body — подстрока тела (пусто — не проверять).
+type HTTPCheckURL struct {
+	URL    string `yaml:"url"`
+	Status int    `yaml:"status"`
+	Body   string `yaml:"body"`
+}
+
+// SpeedTest — активный замер скорости: на проводных каналах раз в сутки в At,
+// на лимитированных (LTE) — никогда автоматически, только по команде.
+type SpeedTest struct {
+	// URLs пробуются по порядку: следующий — если предыдущий не отдал данных.
+	URLs     []string      `yaml:"urls"`
+	At       string        `yaml:"at"` // "ЧЧ:ММ" местного времени
+	Duration time.Duration `yaml:"duration"`
+	MaxBytes int64         `yaml:"max_bytes"`
+}
+
+// AtClock разбирает At; ok=false при ошибке формата.
+func (s SpeedTest) AtClock() (hour, minute int, ok bool) {
+	t, err := time.Parse("15:04", s.At)
+	if err != nil {
+		return 0, 0, false
+	}
+	return t.Hour(), t.Minute(), true
+}
+
+// ProbeTargets — общие цели и цели белого списка для канала.
+func (c *Config) ProbeTargets(l Link) (general, whitelist []netip.Addr) {
+	targets := l.ProbeTargets
+	if len(targets) == 0 {
+		targets = c.Monitor.Targets
+	}
+	if !l.WhitelistDetection {
+		return targets, nil
+	}
+	wl := make(map[netip.Addr]bool, len(c.Monitor.WhitelistTargets))
+	for _, a := range c.Monitor.WhitelistTargets {
+		wl[a] = true
+	}
+	for _, a := range targets {
+		if !wl[a] {
+			general = append(general, a)
+		}
+	}
+	return general, c.Monitor.WhitelistTargets
 }
 
 type Class struct {
