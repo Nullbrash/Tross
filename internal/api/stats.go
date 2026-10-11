@@ -89,7 +89,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	} else {
 		lvl = slog.LevelDebug
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"logs": s.opts.Logs.Entries(lvl, limit)})
+	writeJSON(w, http.StatusOK, map[string]any{"logs": nonNil(s.opts.Logs.Entries(lvl, limit))})
 }
 
 type linkCounters struct {

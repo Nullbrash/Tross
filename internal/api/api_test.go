@@ -182,7 +182,23 @@ func TestStatsAndMetrics(t *testing.T) {
 		}
 	}
 	rec = do(h, http.MethodGet, "/api/metrics", "127.0.0.1:1")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"goroutines"`) || !strings.Contains(rec.Body.String(), `"rx_bytes"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"goroutines"`) || !strings.Contains(rec.Body.String(), `"rx_bytes"`) ||
+		!strings.Contains(rec.Body.String(), `"system":null`) {
 		t.Fatalf("metrics: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestEmptyLogsIsList(t *testing.T) {
+	h := New(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Logs: logring.New(5),
+		AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}).Handler()
+	if rec := do(h, http.MethodGet, "/api/logs", "127.0.0.1:1"); !strings.Contains(rec.Body.String(), `"logs":[]`) {
+		t.Fatalf("empty logs: %s", rec.Body.String())
+	}
+}
+
+func TestSystemSampleJSON(t *testing.T) {
+	b, _ := json.Marshal(store.SystemSample{CPUBusy: 1})
+	if !strings.Contains(string(b), `"cpu_busy":1`) {
+		t.Fatalf("system sample json: %s", b)
 	}
 }

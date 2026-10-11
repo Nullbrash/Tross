@@ -6,7 +6,8 @@
 #
 #   scripts/lab-load [секунд на сценарий=60] [bare|daemon|both=both] [сценарии...]
 #
-# Сценарии: idle game torrent steam stream all. Во всех, кроме idle, идёт
+# Сценарии: idle game torrent steam stream all torrent-user torrent-max
+# all-user (= torrent-user + steam + stream). Во всех, кроме idle, идёт
 # «игра» (UDP 64 пакета/с) — её задержка под нагрузкой и есть прирост пинга.
 # Канал isp1 ограничен 500/500 Мбит/с (порядок реального канала 60 МБ/с),
 # offload off — пакеты настоящего размера (честный ЦП, см. CONTEXT_lab).
@@ -34,7 +35,13 @@ api=http://192.168.77.1:8080
 declare -A LOAD=(
 	[torrent]="-down 150 -up 50 -chunk 1000000 -churn"
 	[steam]="-down 8 -chunk 100000000"
-	[stream]="-down 1 -down-mbit 20 -up 1 -up-mbit 8 -chunk 100000000000"
+	[stream]="-down 1 -down-mbit 20 -up 1 -up-mbit 8 -chunk 5000000000"
+	# Домашний торрент-клиент с ограничением скорости: одна загрузка до 400
+	# пиров, до 80 слотов отдачи, ~2/0,5 МБ/с на всё, uTP и DHT — фон UDP;
+	# пиры — 64 адреса.
+	[torrent-user]="-down 400 -down-mbit 0.042 -up 80 -up-mbit 0.0525 -chunk 1000000000 -targets 203.0.113.64/26 -udp-pps 200 -port 81"
+	# То же без лимитов скорости (если их поднять под быстрый канал).
+	[torrent-max]="-down 400 -up 80 -chunk 5000000 -targets 203.0.113.64/26 -udp-pps 200 -port 81"
 )
 
 S() { sudo -n "$@"; }
@@ -70,6 +77,7 @@ run_scenario() {
 	case $sc in
 	idle | game) ;;
 	all) loads=(torrent steam stream) ;;
+	all-user) loads=(torrent-user steam stream) ;;
 	*) loads=("$sc") ;;
 	esac
 	for k in "${loads[@]}"; do
@@ -95,7 +103,7 @@ for mode in $modes; do
 		;;
 	daemon)
 		S "$lab" simple-route off >/dev/null
-		rm -rf "$out/data"
+		S rm -rf "$out/data"
 		S ip netns exec tl-tross "$bin/trossd" -config configs/lab.yaml -data-dir "$out/data" >"$out/trossd.log" 2>&1 &
 		for _ in $(seq 1 60); do
 			S ip netns exec tl-tross wget -qO- "$api/api/links" 2>/dev/null | grep -q '"id":"isp1"[^}]*"state":"up"' && break

@@ -119,6 +119,10 @@ start_servers() {
 	nsx tl-inet setsid "$BIN/labsrv" serve -http "$SRV_IP:80" -udp "$SRV_IP:9000" -portal "$SRV_IP:8080" \
 		> "$STATE/labsrv.log" 2>&1 < /dev/null &
 	echo $! > "$STATE/labsrv.pid"
+	# «Пиры» на всех адресах (в том числе 203.0.113.64/26) — отдельные порты:
+	# занятый выше 203.0.113.10:80 не дал бы слушать 0.0.0.0:80.
+	nsx tl-inet setsid "$BIN/labsrv" serve -http ":81" -udp ":9001" > "$STATE/labsrv-peers.log" 2>&1 < /dev/null &
+	echo $! > "$STATE/labsrv-peers.pid"
 	if command -v iperf3 >/dev/null; then
 		nsx tl-inet iperf3 -s -B "$SRV_IP" -D --pidfile "$STATE/iperf3.pid" --logfile "$STATE/iperf3.log"
 	fi
@@ -136,7 +140,7 @@ start_servers() {
 }
 
 stop_servers() {
-	for p in labsrv iperf3 dnsmasq; do
+	for p in labsrv labsrv-peers iperf3 dnsmasq; do
 		[ -f "$STATE/$p.pid" ] && kill "$(cat "$STATE/$p.pid")" 2>/dev/null || true
 		rm -f "$STATE/$p.pid"
 	done
@@ -162,7 +166,7 @@ cmd_status() {
 		nsx "$(ns_of "$l")" tc qdisc show dev cpe | sed 's/^/   /'
 	done
 	echo "== servers"
-	for p in labsrv iperf3 dnsmasq; do
+	for p in labsrv labsrv-peers iperf3 dnsmasq; do
 		if [ -f "$STATE/$p.pid" ] && kill -0 "$(cat "$STATE/$p.pid")" 2>/dev/null; then echo "   $p running"; else echo "   $p not running"; fi
 	done
 }

@@ -39,13 +39,13 @@ type LinkSample struct {
 
 // SystemSample — поминутная выборка машины и самого демона.
 type SystemSample struct {
-	At          time.Time
-	CPUBusy     float64 // % всей машины
-	CPUSoftIRQ  float64 // % на обработку пакетов ядром
-	MemUsedMB   float64
-	ProcCPU     float64 // % одного ядра, процесс демона
-	ProcRSSMB   float64
-	DiskWriteKB float64 // записано на диск процессом демона за минуту
+	At          time.Time `json:"at"`
+	CPUBusy     float64   `json:"cpu_busy"`    // % всей машины
+	CPUSoftIRQ  float64   `json:"cpu_softirq"` // % на обработку пакетов ядром
+	MemUsedMB   float64   `json:"mem_used_mb"`
+	ProcCPU     float64   `json:"proc_cpu"` // % одного ядра, процесс демона
+	ProcRSSMB   float64   `json:"proc_rss_mb"`
+	DiskWriteKB float64   `json:"disk_write_kb"` // записано на диск процессом демона за минуту
 }
 
 // Resolution — шаг статистики.

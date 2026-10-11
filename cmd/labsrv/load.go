@@ -1,13 +1,17 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -20,6 +24,9 @@ import (
 //	торрент: -down 150 -up 50 -chunk 1000000 -churn   (сотни соединений, обмен в обе стороны)
 //	Steam:   -down 8 -chunk 100000000                  (несколько толстых потоков)
 //	стрим:   -down 1 -down-mbit 20 -up 1 -up-mbit 8    (ровный просмотр и ровная отдача)
+//
+// -targets разносит потоки по адресам подсети (как пиры торрента), -udp-pps
+// добавляет фон мелких UDP-пакетов на случайные адрес:порт (DHT, uTP).
 func load(args []string) error {
 	fs := flag.NewFlagSet("load", flag.ExitOnError)
 	base := fs.String("url", "", "server base URL, e.g. http://203.0.113.10")
@@ -30,9 +37,34 @@ func load(args []string) error {
 	downMbit := fs.Float64("down-mbit", 0, "pace each download worker to this rate; 0 — unlimited")
 	upMbit := fs.Float64("up-mbit", 0, "pace each upload worker to this rate; 0 — unlimited")
 	duration := fs.Duration("duration", 60*time.Second, "how long to run")
+	targets := fs.String("targets", "", "spread workers over addresses of this IPv4 prefix (server must answer on all of them)")
+	udpPPS := fs.Int("udp-pps", 0, "background UDP packets per second to random address:port in -targets")
+	targetPort := fs.String("port", "", "server port on -targets addresses; default — the port of -url")
 	_ = fs.Parse(args)
-	if *base == "" || *down+*up == 0 || *chunk <= 0 {
-		return errors.New("need -url, -down or -up, positive -chunk")
+	if *base == "" || *down+*up+*udpPPS == 0 || *chunk <= 0 {
+		return errors.New("need -url, -down, -up or -udp-pps, positive -chunk")
+	}
+	addrs, err := prefixAddrs(*targets)
+	if err != nil {
+		return err
+	}
+	if *udpPPS > 0 && len(addrs) == 0 {
+		return errors.New("-udp-pps needs -targets")
+	}
+	worker := 0
+	// baseFor — адрес сервера для очередного потока: по кругу по -targets.
+	baseFor := func() string {
+		worker++
+		if len(addrs) == 0 {
+			return *base
+		}
+		u, _ := url.Parse(*base)
+		port := cmp.Or(*targetPort, u.Port())
+		u.Host = addrs[worker%len(addrs)].String()
+		if port != "" {
+			u.Host = net.JoinHostPort(u.Host, port)
+		}
+		return u.String()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *duration)
@@ -46,10 +78,10 @@ func load(args []string) error {
 	var rx, tx, reqs, errs atomic.Int64
 	var wg sync.WaitGroup
 	for range *down {
+		target := baseFor() + "/bytes?n=" + strconv.FormatInt(*chunk, 10)
 		wg.Go(func() {
-			url := *base + "/bytes?n=" + strconv.FormatInt(*chunk, 10)
 			for ctx.Err() == nil {
-				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+				req, _ := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 				resp, err := c.Do(req)
 				if err == nil {
 					// Медленное чтение тормозит отправителя через окно TCP — так
@@ -65,10 +97,11 @@ func load(args []string) error {
 		})
 	}
 	for range *up {
+		target := baseFor() + "/sink"
 		wg.Go(func() {
 			for ctx.Err() == nil {
 				body := &pacedReader{ctx: ctx, left: *chunk, bps: *upMbit * 1e6 / 8, start: time.Now(), count: &tx}
-				req, _ := http.NewRequestWithContext(ctx, http.MethodPost, *base+"/sink", body)
+				req, _ := http.NewRequestWithContext(ctx, http.MethodPost, target, body)
 				req.ContentLength = -1 // без длины: отдачу можно оборвать по окончании прогона
 				resp, err := c.Do(req)
 				if err == nil {
@@ -82,12 +115,63 @@ func load(args []string) error {
 			}
 		})
 	}
+	var udpSent atomic.Int64
+	if *udpPPS > 0 {
+		wg.Go(func() { udpNoise(ctx, addrs, *udpPPS, &udpSent) })
+	}
 	start := time.Now()
 	wg.Wait()
 	sec := time.Since(start).Seconds()
-	fmt.Printf("load %.0f s: down %.1f Mbit/s, up %.1f Mbit/s, requests %d, errors %d\n",
-		sec, float64(rx.Load())*8/1e6/sec, float64(tx.Load())*8/1e6/sec, reqs.Load(), errs.Load())
+	fmt.Printf("load %.0f s: down %.1f Mbit/s, up %.1f Mbit/s, requests %d, errors %d, udp packets %d\n",
+		sec, float64(rx.Load())*8/1e6/sec, float64(tx.Load())*8/1e6/sec, reqs.Load(), errs.Load(), udpSent.Load())
 	return nil
+}
+
+func prefixAddrs(s string) ([]netip.Addr, error) {
+	if s == "" {
+		return nil, nil
+	}
+	p, err := netip.ParsePrefix(s)
+	if err != nil || !p.Addr().Is4() || p.Bits() < 16 {
+		return nil, fmt.Errorf("-targets: IPv4 prefix /16 or longer expected")
+	}
+	var out []netip.Addr
+	for a := p.Masked().Addr(); p.Contains(a); a = a.Next() {
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// udpNoise — одно UDP-гнездо шлёт мелкие пакеты на случайные адрес:порт, как
+// DHT: каждая новая пара — новая запись conntrack; большинство без ответа.
+func udpNoise(ctx context.Context, addrs []netip.Addr, pps int, sent *atomic.Int64) {
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	go func() { // ответы (эхо на порту 9000) просто вычитываем
+		buf := make([]byte, 2048)
+		for {
+			if _, _, err := conn.ReadFrom(buf); err != nil {
+				return
+			}
+		}
+	}()
+	payload := make([]byte, 100)
+	t := time.NewTicker(time.Second / time.Duration(pps))
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		dst := netip.AddrPortFrom(addrs[rand.IntN(len(addrs))], uint16(1024+rand.IntN(64512)))
+		if _, err := conn.WriteToUDPAddrPort(payload, dst); err == nil {
+			sent.Add(1)
+		}
+	}
 }
 
 // pacedReader читает из src (nil — нули) не быстрее bps (0 — без
