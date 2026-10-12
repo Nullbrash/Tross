@@ -425,22 +425,23 @@ func (s *System) SpeedTest(ctx context.Context, id model.LinkID) (model.Throughp
 		}
 		wg.Wait()
 		close(errs)
-		var frozen, other error
+		var bad, other error
 		for err := range errs {
 			switch {
-			case errors.Is(err, ErrTransferFrozen):
-				frozen = err
+			case errors.Is(err, ErrTransferFrozen), errors.Is(err, ErrStubResponse):
+				bad = err
 			case err != nil:
 				other = err
 			}
 		}
-		// Застывшая передача — признак блокировки источника, а не скорости
-		// канала: такой замер не засчитывается, берётся следующий источник.
-		if frozen == nil && total.Load() > 0 {
+		// Застывшая передача или заглушка вместо данных — признак блокировки
+		// источника, а не скорости канала: такой замер не засчитывается,
+		// берётся следующий источник.
+		if bad == nil && total.Load() > 0 {
 			th = model.Throughput{DownBps: uint64(float64(total.Load()) * 8 / time.Since(start).Seconds()), MeasuredAt: time.Now()}
 			break
 		}
-		lastErr = fmt.Errorf("%s: %w", url, cmp.Or(frozen, other, errors.New("no data")))
+		lastErr = fmt.Errorf("%s: %w", url, cmp.Or(bad, other, errors.New("no data")))
 		s.opts.Log.Warn("speed test source failed, trying next", "link", id, "err", lastErr)
 	}
 	if th.MeasuredAt.IsZero() {
@@ -466,6 +467,13 @@ const tcpEveryMetered = 5
 const stallAfter = 3 * time.Second
 
 var ErrTransferFrozen = errors.New("transfer froze early — source likely blocked (DPI), not a slow link")
+
+// minResponse — ответ короче этого — не тестовые данные, а заглушка:
+// страница авторизации или блокировки провайдера, «ok» вместо файла.
+// Источники теста скорости отдают мегабайты на запрос.
+const minResponse = 64 << 10
+
+var ErrStubResponse = errors.New("source answered with a short page, not test data — likely captive portal or block page")
 
 // speedStream повторяет запросы, пока не истечёт срок или не наберётся
 // общий предел. Повтор нужен: сервер ограничивает объём одного ответа
@@ -529,6 +537,9 @@ func speedRequest(ctx context.Context, c *http.Client, url string, deadline time
 			last.Store(time.Now().UnixNano())
 		}
 		if err == io.EOF {
+			if got < minResponse {
+				return got, false, fmt.Errorf("%w (%d bytes)", ErrStubResponse, got)
+			}
 			return got, false, nil
 		}
 		if err != nil {

@@ -88,8 +88,9 @@ func start(t *testing.T) *bench {
 			DNS:  []netip.Addr{netip.MustParseAddr("203.0.113.53")},
 			URLs: []HTTPCheckURL{{URL: "http://check.lab/generate_204", Status: 204}},
 		},
-		// Первый источник недоступен (порт закрыт) — каждый замер проверяет переход на запасной.
-		SpeedTest: SpeedTestOptions{URLs: []string{"http://203.0.113.10:81/none", "http://203.0.113.10/bytes?n=200000000"}, Hour: -1, Duration: 6 * time.Second, MaxBytes: 200_000_000},
+		// Первый источник недоступен (порт закрыт), второй отвечает заглушкой
+		// «ok» — каждый замер проверяет переход на запасной.
+		SpeedTest: SpeedTestOptions{URLs: []string{"http://203.0.113.10:81/none", "http://203.0.113.10/", "http://203.0.113.10/bytes?n=200000000"}, Hour: -1, Duration: 6 * time.Second, MaxBytes: 200_000_000},
 	}, probes)
 	if err != nil {
 		t.Fatal(err)
