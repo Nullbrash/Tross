@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Длинный прогон демона на закрытом стенде: «домашний день» по кругу —
+# простой, игра, торрент, Steam, стрим — до истечения срока. Цель: реальная
+# запись на SSD в сутки, рост базы, память демона во времени, сводки по часам.
+# Не зависит ни от внешней сети, ни от SSH: запускать службой systemd, чтобы
+# пережил отключение. Бинарники собрать заранее (scripts/lab-sync build).
+#
+#   sudo systemd-run --unit=tross-soak --uid=tross --setenv=HOME=/home/tross \
+#     --working-directory=/home/tross/tross scripts/lab-soak 8h
+#   journalctl -u tross-soak -f          # ход прогона
+#   SOAK_UNIT=3 scripts/lab-soak 4m       # быстрая проверка самого скрипта
+#   sudo systemctl stop tross-soak       # досрочно (стенд снимется)
+#
+# Результаты: ~/lab-results/<дата>-soak/ — metrics.jsonl (каждые 5 мин),
+# segments.txt (сегменты и пинг игры), measure/ (labmeasure раз в 10 с),
+# api-*.json (сводки в конце), trossd.log, data/ (база).
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+total=${1:-8h}
+case $total in
+*h) secs=$((${total%h} * 3600)) ;;
+*m) secs=$((${total%m} * 60)) ;;
+*) secs=$total ;;
+esac
+deadline=$(($(date +%s) + secs))
+# SOAK_UNIT — секунд в «минуте» сегмента: для быстрой проверки скрипта.
+unit=${SOAK_UNIT:-60}
+out=$HOME/lab-results/$(date +%F)-soak
+lab=$PWD/scripts/lab-netns
+bin=$PWD/bin
+srv=http://203.0.113.10
+api=http://192.168.77.1:8080
+[ -x "$bin/trossd" ] && [ -x "$bin/labsrv" ] && [ -x "$bin/labmeasure" ] || { echo "build first: scripts/lab-sync build"; exit 1; }
+
+# Сегменты «дня»: имя, минуты, нагрузка labsrv load (пусто — без нагрузки).
+SEGMENTS=(
+	"idle 15 -"
+	"game 10 -"
+	"torrent-user 20 -down 400 -down-mbit 0.042 -up 80 -up-mbit 0.0525 -chunk 1000000000 -targets 203.0.113.64/26 -udp-pps 200 -port 88"
+	"steam 5 -down 8 -chunk 100000000"
+	"stream 10 -down 1 -down-mbit 20 -up 1 -up-mbit 8 -chunk 5000000000"
+)
+
+S() { sudo -n "$@"; }
+client() { S ip netns exec tl-client "$@"; }
+tross() { S ip netns exec tl-tross "$@"; }
+snap() { S sh -c '{ ip -4 route show table all; ip rule; ip -br link; nft list ruleset; } | md5sum'; }
+now() { date +%s; }
+log() { echo "$(date +%T) $*" | tee -a "$out/segments.txt"; }
+
+rm -rf "$out" 2>/dev/null || S rm -rf "$out"
+mkdir -p "$out"
+before=$(snap)
+cleanup() {
+	S pkill -INT -x trossd 2>/dev/null || true
+	S pkill -INT -x labmeasure 2>/dev/null || true
+	sleep 2
+	S "$lab" down >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+S "$lab" down >/dev/null 2>&1 || true
+S "$lab" up >/dev/null
+S "$lab" offload off >/dev/null
+S "$lab" shape isp1 8 1 0 500 500 >/dev/null
+tross "$bin/trossd" -config configs/lab.yaml -data-dir "$out/data" >"$out/trossd.log" 2>&1 &
+for _ in $(seq 1 60); do
+	tross wget -qO- "$api/api/links" 2>/dev/null | grep -q '"id":"isp1"[^}]*"state":"up"' && break
+	sleep 1
+done
+S "$bin/labmeasure" -out "$out/measure" -interval 10s -duration "$((deadline - $(now)))s" -proc trossd -netns tl-tross >/dev/null &
+
+# Снимок метрик раз в 5 минут — фоном до конца прогона.
+(while [ "$(now)" -lt "$deadline" ]; do
+	m=$(tross wget -qO- "$api/api/metrics" 2>/dev/null || echo '{}')
+	ct=$(tross cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
+	db=$(S du -sb "$out/data" 2>/dev/null | cut -f1)
+	echo "{\"t\":\"$(date -Is)\",\"conntrack\":$ct,\"data_dir_bytes\":${db:-0},\"metrics\":$m}" >>"$out/metrics.jsonl"
+	sleep 300
+done) &
+
+log "soak start, until $(date -d @"$deadline" +%T)"
+while [ "$(now)" -lt "$deadline" ]; do
+	for seg in "${SEGMENTS[@]}"; do
+		read -r name minutes args <<<"$seg"
+		left=$((deadline - $(now)))
+		[ "$left" -gt 30 ] || break
+		dur=$((minutes * unit < left ? minutes * unit : left))
+		pids=()
+		if [ "$args" != - ]; then
+			# shellcheck disable=SC2086
+			client "$bin/labsrv" load -url "$srv" $args -duration "${dur}s" >"$out/load.tmp" 2>&1 &
+			pids+=($!)
+		fi
+		game=""
+		if [ "$name" != idle ]; then
+			client "$bin/labsrv" udpping -target 203.0.113.10:9000 -rate 64 -n $(((dur - 6) * 64)) -size 120 >"$out/game.tmp" 2>&1 &
+			pids+=($!)
+		else
+			sleep "$dur" &
+			pids+=($!)
+		fi
+		wait "${pids[@]}" || true
+		[ "$name" != idle ] && game=$(tail -1 "$out/game.tmp")
+		[ "$args" != - ] && load=$(tail -1 "$out/load.tmp") || load=""
+		log "$name ${dur}s | $load | $game"
+	done
+done
+log "soak end"
+
+for p in metrics "system/stats?res=hour" "system/stats?res=minute&from=$(date -u -d '-6 days' +%FT%TZ)" \
+	"links/isp1/stats?res=hour" "events?limit=1000" "logs?level=warn"; do
+	tross wget -qO- "$api/api/$p" >"$out/api-$(echo "$p" | cut -d'&' -f1 | tr '/?=&' '____').json" 2>/dev/null || true
+done
+cleanup
+trap - EXIT
+S ls -l "$out/data" >"$out/data-dir.txt"
+S chown -R "$(id -u):$(id -g)" "$out" 2>/dev/null || true
+after=$(snap)
+[ "$before" = "$after" ] || log "HOST NETWORK CHANGED: $before -> $after"
+log "SOAK DONE: $out"

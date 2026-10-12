@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Сторож стенда для прогонов без присмотра: раз в 30 с проверяет температуру
+# процессора, питание и место на диске; при опасности останавливает тесты
+# (демон, генераторы, прогонные скрипты, стенд netns), в крайнем случае
+# выключает машину. Работает сам, без сети и без SSH.
+#
+#   sudo scripts/lab-guard install     поставить службу tross-lab-guard (копия в /usr/local/sbin)
+#   sudo scripts/lab-guard uninstall   убрать службу
+#   scripts/lab-guard status           текущие показания и пороги
+#   sudo GUARD_DRY=1 GUARD_TEMP_STOP=30 scripts/lab-guard check   проверка без действий
+#
+# Журнал: journalctl -t tross-lab-guard (и /var/log/tross-lab-guard.log).
+set -euo pipefail
+
+TEMP_STOP=${GUARD_TEMP_STOP:-85}  # °C — остановить тесты
+TEMP_OFF=${GUARD_TEMP_OFF:-95}    # °C — выключить (два замера подряд)
+BAT_OFF=${GUARD_BAT_OFF:-15}      # % батареи без сети — выключить
+DISK_MIN_MB=${GUARD_DISK_MIN_MB:-2048}
+INTERVAL=${GUARD_INTERVAL:-30}
+DRY=${GUARD_DRY:-0}
+LAB_USER=${GUARD_LAB_USER:-tross}
+LAB_NETNS=/home/$LAB_USER/tross/scripts/lab-netns
+NS_ALL=(tl-client tl-tross tl-isp1 tl-isp2 tl-lte tl-inet)
+STATE=/run/tross-lab-guard
+LOGFILE=/var/log/tross-lab-guard.log
+SELF=/usr/local/sbin/tross-lab-guard
+UNIT=/etc/systemd/system/tross-lab-guard.service
+
+log() {
+	local prio=$1
+	shift
+	logger -t tross-lab-guard -p "user.$prio" -- "$*"
+	echo "$(date -Is) $prio $*" >>"$LOGFILE" 2>/dev/null || true
+}
+
+# Температура процессора: k10temp (AMD) или coretemp (Intel), иначе максимум
+# по всем датчикам hwmon. Пусто — датчика нет.
+cpu_temp() {
+	local h best=""
+	for h in /sys/class/hwmon/hwmon*; do
+		case $(cat "$h/name" 2>/dev/null) in
+		k10temp | coretemp | zenpower)
+			[ -r "$h/temp1_input" ] && { echo $(($(cat "$h/temp1_input") / 1000)); return; } ;;
+		esac
+	done
+	for f in /sys/class/hwmon/hwmon*/temp*_input; do
+		[ -r "$f" ] || continue
+		local t=$(($(cat "$f") / 1000))
+		[ -z "$best" ] || [ "$t" -gt "$best" ] && best=$t
+	done
+	echo "$best"
+}
+
+# on_ac: 1 — от сети, 0 — от батареи, пусто — неизвестно (нет блока питания в sysfs).
+on_ac() {
+	local p
+	for p in /sys/class/power_supply/*; do
+		[ "$(cat "$p/type" 2>/dev/null)" = Mains ] && { cat "$p/online"; return; }
+	done
+}
+
+battery() {
+	local p
+	for p in /sys/class/power_supply/*; do
+		[ "$(cat "$p/type" 2>/dev/null)" = Battery ] && { cat "$p/capacity"; return; }
+	done
+}
+
+disk_free_mb() { df --output=avail -m / | tail -1 | tr -d ' '; }
+
+tests_running() {
+	ip netns list 2>/dev/null | grep -qw tl-tross && return 0
+	pgrep -x trossd >/dev/null || pgrep -x labsrv >/dev/null || systemctl is-active -q tross-soak 2>/dev/null
+}
+
+stop_tests() {
+	local why=$1
+	if ! tests_running; then
+		return
+	fi
+	log warning "STOP TESTS: $why"
+	[ "$DRY" = 1 ] && { log notice "dry run: tests left running"; return; }
+	systemctl stop tross-soak 2>/dev/null || true
+	# Скрипты прогонов — до стенда, иначе они поднимут его снова.
+	pkill -f '[s]cripts/lab-(load|soak|itest)' 2>/dev/null || true
+	pkill -INT -x trossd 2>/dev/null || true
+	pkill -x labmeasure 2>/dev/null || true
+	sleep 2
+	pkill -x labsrv 2>/dev/null || true
+	pkill -x iperf3 2>/dev/null || true
+	if [ -x "$LAB_NETNS" ]; then
+		"$LAB_NETNS" down >/dev/null 2>&1 || true
+	fi
+	# Запасной путь: lab-netns мог исчезнуть при синхронизации копии.
+	for ns in "${NS_ALL[@]}"; do ip netns del "$ns" 2>/dev/null || true; done
+	log warning "tests stopped, lab netns removed"
+}
+
+power_off() {
+	log crit "POWER OFF: $1"
+	[ "$DRY" = 1 ] && { log notice "dry run: not powering off"; return; }
+	stop_tests "$1"
+	sync
+	systemctl poweroff
+}
+
+check() {
+	mkdir -p "$STATE"
+	local t ac bat free
+	t=$(cpu_temp)
+	ac=$(on_ac)
+	bat=$(battery)
+	free=$(disk_free_mb)
+
+	if [ -n "$t" ]; then
+		if [ "$t" -ge "$TEMP_OFF" ]; then
+			if [ -f "$STATE/hot" ]; then
+				power_off "cpu ${t}°C >= ${TEMP_OFF}°C twice in a row"
+			else
+				touch "$STATE/hot"
+				stop_tests "cpu ${t}°C >= ${TEMP_OFF}°C"
+			fi
+		else
+			rm -f "$STATE/hot"
+			[ "$t" -ge "$TEMP_STOP" ] && stop_tests "cpu ${t}°C >= ${TEMP_STOP}°C"
+		fi
+	fi
+	if [ "$ac" = 0 ]; then
+		stop_tests "running on battery (${bat:-?}%)"
+		[ -n "$bat" ] && [ "$bat" -lt "$BAT_OFF" ] && power_off "battery ${bat}% < ${BAT_OFF}% without mains"
+	fi
+	[ -n "$free" ] && [ "$free" -lt "$DISK_MIN_MB" ] && stop_tests "disk free ${free} MB < ${DISK_MIN_MB} MB"
+	return 0
+}
+
+status() {
+	echo "cpu temp:   $(cpu_temp) °C (stop >= $TEMP_STOP, power off >= $TEMP_OFF)"
+	echo "on mains:   $(on_ac) (0 — battery: stop tests; battery < $BAT_OFF% — power off)"
+	echo "battery:    $(battery)%"
+	echo "disk free:  $(disk_free_mb) MB (stop < $DISK_MIN_MB)"
+	echo -n "tests:      "; tests_running && echo running || echo idle
+	echo -n "service:    "; systemctl is-active tross-lab-guard 2>/dev/null || true
+}
+
+install_unit() {
+	install -m 0755 "$0" "$SELF"
+	cat >"$UNIT" <<-EOF
+		[Unit]
+		Description=Tross lab guard: stop tests or power off on overheating, battery, full disk
+		After=multi-user.target
+
+		[Service]
+		ExecStart=$SELF run
+		Restart=always
+		RestartSec=10
+
+		[Install]
+		WantedBy=multi-user.target
+	EOF
+	systemctl daemon-reload
+	systemctl enable --now tross-lab-guard
+	log notice "installed: stop >= ${TEMP_STOP}°C, off >= ${TEMP_OFF}°C, battery < ${BAT_OFF}%, disk < ${DISK_MIN_MB} MB"
+}
+
+case ${1:-} in
+check) check ;;
+run)
+	log notice "started: stop >= ${TEMP_STOP}°C, off >= ${TEMP_OFF}°C, battery < ${BAT_OFF}%, disk < ${DISK_MIN_MB} MB"
+	while :; do
+		check || log err "check failed"
+		sleep "$INTERVAL"
+	done
+	;;
+status) status ;;
+install) install_unit ;;
+uninstall)
+	systemctl disable --now tross-lab-guard 2>/dev/null || true
+	rm -f "$UNIT" "$SELF"
+	systemctl daemon-reload
+	;;
+*)
+	echo "usage: lab-guard install|uninstall|status|check|run" >&2
+	exit 2
+	;;
+esac

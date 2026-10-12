@@ -39,9 +39,9 @@ declare -A LOAD=(
 	# Домашний торрент-клиент с ограничением скорости: одна загрузка до 400
 	# пиров, до 80 слотов отдачи, ~2/0,5 МБ/с на всё, uTP и DHT — фон UDP;
 	# пиры — 64 адреса.
-	[torrent-user]="-down 400 -down-mbit 0.042 -up 80 -up-mbit 0.0525 -chunk 1000000000 -targets 203.0.113.64/26 -udp-pps 200 -port 81"
+	[torrent-user]="-down 400 -down-mbit 0.042 -up 80 -up-mbit 0.0525 -chunk 1000000000 -targets 203.0.113.64/26 -udp-pps 200 -port 88"
 	# То же без лимитов скорости (если их поднять под быстрый канал).
-	[torrent-max]="-down 400 -up 80 -chunk 5000000 -targets 203.0.113.64/26 -udp-pps 200 -port 81"
+	[torrent-max]="-down 400 -up 80 -chunk 5000000 -targets 203.0.113.64/26 -udp-pps 200 -port 88"
 )
 
 S() { sudo -n "$@"; }

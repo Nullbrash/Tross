@@ -120,8 +120,9 @@ start_servers() {
 		> "$STATE/labsrv.log" 2>&1 < /dev/null &
 	echo $! > "$STATE/labsrv.pid"
 	# «Пиры» на всех адресах (в том числе 203.0.113.64/26) — отдельные порты:
-	# занятый выше 203.0.113.10:80 не дал бы слушать 0.0.0.0:80.
-	nsx tl-inet setsid "$BIN/labsrv" serve -http ":81" -udp ":9001" > "$STATE/labsrv-peers.log" 2>&1 < /dev/null &
+	# занятый выше 203.0.113.10:80 не дал бы слушать 0.0.0.0:80. Порт 81 не
+	# занимать: тесты монитора берут 203.0.113.10:81 как заведомо мёртвый источник.
+	nsx tl-inet setsid "$BIN/labsrv" serve -http ":88" -udp ":9001" > "$STATE/labsrv-peers.log" 2>&1 < /dev/null &
 	echo $! > "$STATE/labsrv-peers.pid"
 	if command -v iperf3 >/dev/null; then
 		nsx tl-inet iperf3 -s -B "$SRV_IP" -D --pidfile "$STATE/iperf3.pid" --logfile "$STATE/iperf3.log"
