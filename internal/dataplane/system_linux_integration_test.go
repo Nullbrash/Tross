@@ -55,7 +55,10 @@ func newSystem(t *testing.T) *System {
 		t.Fatal(err)
 	}
 	s := dp.(*System)
-	t.Cleanup(func() { _ = s.Teardown(context.Background()) })
+	t.Cleanup(func() {
+		_ = s.Teardown(context.Background())
+		_ = Cleanup(context.Background(), s.log, standSpec(), true)
+	})
 	return s
 }
 
@@ -119,8 +122,11 @@ func TestSetupTeardownIdempotent(t *testing.T) {
 	if n := len(ownedRules(t)); n != 4 {
 		t.Fatalf("owned ip rules = %d, want 4 (suppress + 3 links) — Setup must not duplicate", n)
 	}
-	if out, err := run(t, "nft", "list", "table", "inet", "tross"); err != nil || !strings.Contains(out, "masquerade") {
+	if out, err := run(t, "nft", "list", "table", "inet", "tross"); err != nil || !strings.Contains(out, "chain choose") {
 		t.Fatalf("nft table missing: %v\n%s", err, out)
+	}
+	if out, err := run(t, "nft", "list", "table", "inet", "tross_nat"); err != nil || !strings.Contains(out, "masquerade") {
+		t.Fatalf("NAT table missing: %v\n%s", err, out)
 	}
 	if out, _ := run(t, "ip", "route", "show", "table", "101"); !strings.Contains(out, "default via 100.64.1.1 dev wan1") {
 		t.Fatalf("table 101: %q", out)
@@ -145,6 +151,38 @@ func TestSetupTeardownIdempotent(t *testing.T) {
 	}
 	if v, _ := readSysctl(sysctlSVM); v != svmBefore {
 		t.Fatalf("src_valid_mark = %s, want restored %s", v, svmBefore)
+	}
+	// NAT переживает остановку (fail-open) и уходит только при purge.
+	if _, err := run(t, "nft", "list", "table", "inet", "tross_nat"); err != nil {
+		t.Fatal("NAT table must survive Teardown")
+	}
+	if err := Cleanup(ctx, s.log, standSpec(), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, "nft", "list", "table", "inet", "tross_nat"); err == nil {
+		t.Fatal("NAT table left after purge")
+	}
+}
+
+// TestCleanupAfterCrash — разметка «упавшего» процесса (Setup без Teardown)
+// снимается Cleanup без его состояния; NAT остаётся.
+func TestCleanupAfterCrash(t *testing.T) {
+	ctx := context.Background()
+	s := newSystem(t)
+	if err := s.Setup(ctx, standSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := Cleanup(ctx, s.log, standSpec(), false); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(ownedRules(t)); n != 0 {
+		t.Fatalf("rules left after Cleanup: %d", n)
+	}
+	if _, err := run(t, "nft", "list", "table", "inet", "tross"); err == nil {
+		t.Fatal("policy table left after Cleanup")
+	}
+	if _, err := run(t, "nft", "list", "table", "inet", "tross_nat"); err != nil {
+		t.Fatal("NAT table must survive Cleanup without purge")
 	}
 }
 

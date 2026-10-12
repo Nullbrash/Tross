@@ -14,6 +14,10 @@ import (
 // Имена и метки в ядре, которыми владеет демон. Teardown удаляет только их.
 const (
 	nftTable = "tross"
+	// nftNATTable — masquerade на каналах. Отдельно от nftTable: остановка
+	// демона её не снимает, чтобы домашняя сеть продолжала работать через
+	// основную таблицу маршрутизации (fail-open); убирает только Purge.
+	nftNATTable = "tross_nat"
 	// LinkMarkMask — биты fwmark/ct mark с номером канала (совпадает с config.LinkMarkMask).
 	LinkMarkMask uint32 = 0x0000ff00
 	// rulePrefBase — приоритет правила suppress_prefixlength; правила каналов идут следом.
@@ -26,10 +30,6 @@ const (
 // Пара «add table; delete table» делает загрузку идемпотентной: старая
 // таблица (например, после аварийного завершения) заменяется целиком.
 func renderBase(spec Spec) string {
-	var wans []string
-	for _, l := range spec.Links {
-		wans = append(wans, quote(l.Link.Interface))
-	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "add table inet %s\ndelete table inet %s\n", nftTable, nftTable)
 	fmt.Fprintf(&b, "table inet %s {\n", nftTable)
@@ -48,7 +48,19 @@ func renderBase(spec Spec) string {
 	// соединении, иначе ответ придёт без неё и rp_filter его отбросит.
 	b.WriteString("\tchain output {\n\t\ttype route hook output priority mangle; policy accept;\n")
 	fmt.Fprintf(&b, "\t\tmeta mark and %#x != 0 ct mark set meta mark and %#x\n", LinkMarkMask, LinkMarkMask)
-	b.WriteString("\t}\n")
+	b.WriteString("\t}\n}\n")
+	return b.String()
+}
+
+// renderNAT — таблица masquerade на интерфейсах каналов; заменяется целиком.
+func renderNAT(spec Spec) string {
+	var wans []string
+	for _, l := range spec.Links {
+		wans = append(wans, quote(l.Link.Interface))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "add table inet %s\ndelete table inet %s\n", nftNATTable, nftNATTable)
+	fmt.Fprintf(&b, "table inet %s {\n", nftNATTable)
 	b.WriteString("\tchain postrouting {\n\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
 	if len(wans) > 0 {
 		fmt.Fprintf(&b, "\t\toifname { %s } masquerade\n", strings.Join(wans, ", "))

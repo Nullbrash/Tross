@@ -25,6 +25,8 @@ func run() int {
 	configPath := flag.String("config", "/etc/tross/config.yaml", "path to config file")
 	dryRun := flag.Bool("dry-run", false, "force dry-run mode: change nothing in the system")
 	dataDir := flag.String("data-dir", "", "override daemon.data_dir from the config")
+	cleanup := flag.Bool("cleanup", false, "remove rules left by a crashed daemon (NAT stays) and exit; for ExecStopPost")
+	purge := flag.Bool("purge", false, "remove all daemon rules including NAT and exit; for uninstalling")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -54,6 +56,15 @@ func run() int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if *cleanup || *purge {
+		if err := daemon.Cleanup(ctx, cfg, log, *purge); err != nil {
+			log.Error("trossd cleanup failed", "err", err)
+			return 1
+		}
+		log.Info("trossd cleanup done", "purge", *purge)
+		return 0
+	}
 
 	if err := daemon.Run(ctx, daemon.Options{Config: cfg, Log: log, Logs: logs, Version: version}); err != nil {
 		log.Error("trossd failed", "err", err)

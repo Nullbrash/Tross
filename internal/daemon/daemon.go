@@ -22,6 +22,7 @@ import (
 	"tross/internal/dataplane"
 	"tross/internal/linkmon"
 	"tross/internal/logring"
+	"tross/internal/sdnotify"
 	"tross/internal/store"
 )
 
@@ -110,6 +111,9 @@ func Run(ctx context.Context, opts Options) error {
 	bal := &balancer{log: log, dp: dp, mon: mon, policy: cfg.Policies()[model.ClassDefault]}
 	wg.Go(func() { bal.run(runCtx, linkEvents) })
 	wg.Go(func() { coll.run(runCtx, collectEvery) })
+	if every := sdnotify.WatchdogInterval(); every > 0 {
+		wg.Go(func() { watchdog(runCtx, log, every, mon, cfg.Monitor.Interval) })
+	}
 	wg.Go(func() {
 		if err := mon.Run(runCtx); err != nil {
 			fatal <- fmt.Errorf("link monitor: %w", err)
@@ -122,6 +126,11 @@ func Run(ctx context.Context, opts Options) error {
 	})
 	log.Info("api listening", "addr", ln.Addr().String())
 	bus.Publish(event.Event{Topic: event.TopicDaemon, Data: "started"})
+	// «Готов» — после установки правил и открытия API: systemd считает
+	// службу запущенной только теперь (Type=notify).
+	if err := sdnotify.Notify("READY=1"); err != nil {
+		log.Warn("sd_notify", "err", err)
+	}
 
 	var runErr error
 	select {
@@ -131,6 +140,7 @@ func Run(ctx context.Context, opts Options) error {
 		log.Error("fatal error, shutting down", "err", runErr)
 	}
 
+	_ = sdnotify.Notify("STOPPING=1")
 	bus.Publish(event.Event{Topic: event.TopicDaemon, Data: "stopping"})
 	sctx, scancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer scancel()
@@ -154,6 +164,17 @@ func openStore(dir string) (*store.SQLite, error) {
 		return nil, fmt.Errorf("store: %w", err)
 	}
 	return st, nil
+}
+
+// Cleanup снимает разметку демона без запуска (после аварийного завершения —
+// ExecStopPost службы); purge убирает и NAT. В «сухом» режиме снимать нечего.
+func Cleanup(ctx context.Context, cfg *config.Config, log *slog.Logger, purge bool) error {
+	if cfg.Daemon.DryRun {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+	defer cancel()
+	return dataplane.Cleanup(ctx, log, dataplaneSpec(cfg), purge)
 }
 
 func newDataplane(cfg *config.Config, log *slog.Logger) (dataplane.Dataplane, error) {

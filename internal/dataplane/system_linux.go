@@ -61,7 +61,7 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	}
 	// Остатки прошлого запуска (в т. ч. аварийного) снимаются до установки.
 	s.spec = spec
-	_ = s.cleanupLocked(ctx)
+	_ = s.cleanupLocked(ctx, false)
 
 	// Форвардинг не возвращается при Teardown: без демона сеть должна
 	// продолжать работать через основную таблицу (fail-open).
@@ -82,7 +82,7 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	}
 
 	fail := func(err error) error {
-		_ = s.cleanupLocked(ctx)
+		_ = s.cleanupLocked(ctx, false)
 		_ = writeSysctl(sysctlSVM, s.prevSVM)
 		s.prevSVM = ""
 		return err
@@ -100,7 +100,7 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	}
 	// До первого решения балансировщика — первый канал по приоритету.
 	s.shares = firstByPriority(spec.Links, s.routed)
-	if err := runNft(ctx, renderBase(spec)+renderChoose(spec.Links, s.shares)); err != nil {
+	if err := runNft(ctx, renderNAT(spec)+renderBase(spec)+renderChoose(spec.Links, s.shares)); err != nil {
 		return fail(err)
 	}
 	s.up = true
@@ -197,7 +197,7 @@ func dhcpGateway(link netlink.Link) (netip.Addr, error) {
 func (s *System) Teardown(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err := s.cleanupLocked(ctx)
+	err := s.cleanupLocked(ctx, false)
 	if s.prevSVM != "" {
 		err = errors.Join(err, writeSysctl(sysctlSVM, s.prevSVM))
 		s.prevSVM = ""
@@ -206,11 +206,28 @@ func (s *System) Teardown(ctx context.Context) error {
 	return err
 }
 
+// Cleanup снимает разметку демона без работающего процесса — после
+// аварийного завершения (ExecStopPost службы). src_valid_mark не трогается:
+// прежнее значение знал только упавший процесс. purge — убрать и NAT
+// (удаление Tross из системы).
+func Cleanup(ctx context.Context, log *slog.Logger, spec Spec, purge bool) error {
+	if _, err := exec.LookPath("nft"); err != nil {
+		return fmt.Errorf("dataplane: nft not found: %w", err)
+	}
+	s := &System{log: log, spec: spec}
+	return s.cleanupLocked(ctx, purge)
+}
+
 // cleanupLocked снимает всё, чем владеет демон: таблицу inet tross, ip rule
 // из диапазона демона, маршруты в таблицах каналов текущей спецификации.
-func (s *System) cleanupLocked(ctx context.Context) error {
+// NAT остаётся (fail-open), если не purge.
+func (s *System) cleanupLocked(ctx context.Context, purge bool) error {
 	var errs []error
-	if err := runNft(ctx, fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftTable, nftTable)); err != nil {
+	script := fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftTable, nftTable)
+	if purge {
+		script += fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftNATTable, nftNATTable)
+	}
+	if err := runNft(ctx, script); err != nil {
 		errs = append(errs, err)
 	}
 	rules, err := netlink.RuleList(unix.AF_INET)

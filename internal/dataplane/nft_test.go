@@ -30,10 +30,26 @@ func TestRenderBase(t *testing.T) {
 		"chain choose {\n\t}",
 		"type route hook output priority mangle;",
 		"meta mark and 0xff00 != 0 ct mark set meta mark and 0xff00",
-		`oifname { "wan1", "wan2", "wan3" } masquerade`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("base ruleset lacks %q\n---\n%s", want, got)
+		}
+	}
+	// NAT — в отдельной таблице: её не снимает остановка демона.
+	if strings.Contains(got, "masquerade") {
+		t.Errorf("masquerade must live in the NAT table, not in inet tross")
+	}
+}
+
+func TestRenderNAT(t *testing.T) {
+	got := renderNAT(testSpec())
+	for _, want := range []string{
+		"add table inet tross_nat\ndelete table inet tross_nat\ntable inet tross_nat {",
+		"type nat hook postrouting priority srcnat;",
+		`oifname { "wan1", "wan2", "wan3" } masquerade`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("NAT ruleset lacks %q\n---\n%s", want, got)
 		}
 	}
 }

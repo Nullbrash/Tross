@@ -1,0 +1,56 @@
+# Служба trossd для мини-ПК. Установка:
+#   install -m 0755 bin/linux-amd64/trossd /usr/local/bin/trossd
+#   install -m 0644 deploy/systemd/trossd.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now trossd
+#
+# Без демона сеть работает через основную таблицу маршрутизации (маршрут по
+# умолчанию — забота системы: DHCP или статика на основном канале) и NAT
+# демона, который остановка не снимает. Полное удаление правил:
+#   trossd -config /etc/tross/config.yaml -purge
+
+[Unit]
+Description=Tross multi-WAN balancer
+Documentation=https://github.com/Nullbrash/Tross
+Wants=network-online.target
+After=network-online.target
+# Пять падений за 5 минут — дальше не перезапускать: сеть живёт без демона.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/local/bin/trossd -config /etc/tross/config.yaml
+# После любого завершения, в том числе kill -9 и сработавшего сторожа:
+# снять разметку упавшего процесса, чтобы до перезапуска соединения шли по
+# основной таблице, а не по меткам каналов, которые никто не проверяет.
+ExecStopPost=/usr/local/bin/trossd -config /etc/tross/config.yaml -cleanup
+Restart=on-failure
+RestartSec=2
+# Демон подтверждает живость, пока монитор каналов делает раунды.
+WatchdogSec=30
+TimeoutStartSec=60
+TimeoutStopSec=15
+
+# Ресурсы: потолок защищает саму машину-роутер от утечки в демоне.
+MemoryHigh=384M
+MemoryMax=512M
+TasksMax=256
+LimitNOFILE=65536
+
+# Права: только сеть. Запись в /proc/sys/net — как root, без лишних
+# возможностей; ProtectKernelTunables не ставить — демон пишет sysctl.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+StateDirectory=tross
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/tross
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

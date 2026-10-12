@@ -46,8 +46,9 @@ type Spec struct {
 }
 
 // Dataplane — всё, что демон меняет в сетевом стеке ядра.
-// Teardown обязан снимать всё, что поставил Setup: при остановке демона сеть
-// должна откатиться в работоспособное состояние без него.
+// Teardown обязан снимать всё, что поставил Setup, кроме NAT: при остановке
+// демона сеть должна откатиться в работоспособное состояние без него —
+// через основную таблицу маршрутизации и оставшийся masquerade.
 type Dataplane interface {
 	Setup(ctx context.Context, spec Spec) error
 	Teardown(ctx context.Context) error
