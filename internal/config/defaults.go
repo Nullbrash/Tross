@@ -24,6 +24,9 @@ func addrs(s ...string) []netip.Addr {
 	return out
 }
 
+// path, а не filepath: пути целевой системы всегда в формате Linux.
+func defaultWorkDir(dataDir string) string { return path.Join(dataDir, "mihomo") }
+
 func ptr[T any](v T) *T { return &v }
 func orDefault[T comparable](v *T, d T) {
 	var zero T
@@ -162,8 +165,7 @@ func (c *Config) applyDefaults() {
 	p := &c.Proxy
 	orDefault(&p.Engine, "mihomo")
 	orDefault(&p.Binary, "/usr/local/lib/tross/mihomo")
-	// path, а не filepath: пути целевой системы всегда в формате Linux.
-	orDefault(&p.WorkDir, path.Join(c.Daemon.DataDir, "mihomo"))
+	orDefault(&p.WorkDir, defaultWorkDir(c.Daemon.DataDir))
 	orDefault(&p.Controller, "127.0.0.1:9090")
 	orDefault(&p.TProxyPortBase, 7900)
 	orDefault(&p.RoutingMarkBase, 0x00010000)

@@ -65,13 +65,26 @@ func (c *Config) validateLog(p *problems) {
 	}
 }
 
+// ipv4HostPort — «IPv4:порт». Пустой хост не годится: слушание на всех
+// адресах включило бы и IPv6, который не поддерживается.
+func ipv4HostPort(s string) error {
+	host, _, err := net.SplitHostPort(s)
+	if err != nil {
+		return err
+	}
+	if a, err := netip.ParseAddr(host); err != nil || !a.Is4() {
+		return fmt.Errorf("want IPv4:port, got %q", s)
+	}
+	return nil
+}
+
 func (c *Config) validateAPI(p *problems) {
-	if _, _, err := net.SplitHostPort(c.API.Listen); err != nil {
+	if err := ipv4HostPort(c.API.Listen); err != nil {
 		p.add("api.listen", "%v", err)
 	}
 	for _, n := range c.API.AllowedNetworks {
-		if !n.IsValid() {
-			p.add("api.allowed_networks", "invalid prefix")
+		if !n.IsValid() || !n.Addr().Is4() {
+			p.add("api.allowed_networks", "%s: only IPv4 is supported", n)
 		}
 	}
 }
@@ -280,7 +293,7 @@ func (c *Config) validateDNS(p *problems) {
 		p.add("dns.listen", "at least one address is required")
 	}
 	for _, l := range d.Listen {
-		if _, _, err := net.SplitHostPort(l); err != nil {
+		if err := ipv4HostPort(l); err != nil {
 			p.add("dns.listen", "%v", err)
 		}
 	}

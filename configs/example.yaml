@@ -32,7 +32,7 @@ links:
     interface: enp2s0
     gateway: auto                   # auto (из DHCP) или IPv4 шлюза
     priority: 10                    # меньше — предпочтительнее при равенстве
-    sqm:
+    sqm:                            # CAKE — этап 3, пока не используется
       enabled: true
       down_mbit: 0                  # 0 — брать из измерений, тарифу не доверяем
       up_mbit: 0
@@ -52,8 +52,9 @@ links:
     gateway: 192.168.8.1
     priority: 100
     # metered: true                 # по умолчанию true для lte
-    quota: { monthly_gb: 50, reset_day: 1 }
+    quota: { monthly_gb: 50, reset_day: 1 }   # пока не используется (идея учёта квоты LTE)
     # whitelist_detection: true     # по умолчанию true у всех каналов
+    # probe_targets: [1.1.1.1, 8.8.4.4]  # свои цели проб; по умолчанию monitor.targets
     sqm: { enabled: true }
 
 monitor:
@@ -63,7 +64,7 @@ monitor:
   targets: [1.1.1.1, 8.8.4.4, 9.9.9.9, 77.88.8.8, 195.208.4.1, 194.67.2.114]
   interval: 2s
   timeout: 1s
-  window: 30                        # проб в окне расчёта задержки/джиттера/потерь
+  window: 30                        # раундов в окне расчёта задержки/джиттера/потерь
   fail_after: 3                     # раундов без ответов подряд до down (~6 с)
   recover_after: 10                 # удачных подряд до возврата в up (~20 с)
   # Российские цели (доступны и в режиме «белых списков»): отвечают только они
@@ -96,9 +97,9 @@ monitor:
   speedtest:
     # Один ответ сервера ограничен (Cloudflare: 403 на >= 100 МБ) — тест
     # повторяет запросы в 2 потока (больше 3 TLS к одному имени за минуту ТСПУ
-    # может «заморозить») до duration или max_bytes. Передача, застывшая до
-    # 64 КБ (блок «после ~25 пакетов»), — признак блокировки источника, а не
-    # скорости: берётся следующий адрес.
+    # может «заморозить») до duration или max_bytes. Берётся следующий адрес,
+    # если передача застыла (3 с без данных — блок источника, а не скорость)
+    # или источник отвечает короткими страницами-заглушками (< 64 КБ).
     urls:
       - https://speed.cloudflare.com/__down?bytes=50000000
       - https://web1.cachefly.net/speedtest/downloading
@@ -106,7 +107,9 @@ monitor:
     duration: 10s
     max_bytes: 200000000
 
-# Классы трафика и их политики.
+# Классы трафика и их политики. Сейчас (этап 1) действует только политика
+# класса default — она распределяет все новые соединения; остальные классы
+# заработают с классификатором (этап 2).
 #   selector:   lowest_latency | best_throughput | balanced | ordered
 #   stickiness: none | session | destination  (+ sticky_ttl)
 #   links:      основной пул (пусто — все, кроме fallback)
@@ -173,6 +176,7 @@ classes:
     allow_proxy: true
     priority: normal
 
+# DNS-резолвер — этап 4, пока не используется (listen проверяется уже сейчас).
 dns:
   listen: ["192.168.10.1:53"]
   upstreams:                        # по умолчанию — список ниже
@@ -189,7 +193,8 @@ dns:
   firefox_canary_nxdomain: true     # NXDOMAIN на use-application-dns.net
   watchdog: { interval: 5s, failures: 3 }
 
-# Онлайн-списки — нижний слой (ниже ручных и выученных правил).
+# Онлайн-списки — этап 4, пока не используются. Нижний слой (ниже ручных и
+# выученных правил).
 # purpose: bypass — кандидаты на обход (метод определит проверка);
 #          class  — домены класса трафика (тогда нужен class).
 # URL — ориентиры, сверить перед этапом 4.
@@ -218,6 +223,7 @@ lists:
       purpose: class
       class: streaming
 
+# Обход DPI (zapret) — этап 5, пока не используется.
 dpi:
   enabled: false
   nfqws: /opt/zapret/nfq/nfqws
@@ -225,6 +231,7 @@ dpi:
   recheck_interval: 24h
   probe_domains: [rutracker.org, youtube.com]
 
+# Прокси-ядро (mihomo) — этап 6, пока не используется.
 proxy:
   enabled: false
   engine: mihomo
@@ -236,6 +243,7 @@ proxy:
   routing_mark_base: 0x10000        # метки прокси — выше меток каналов
   # Ключи и подписки добавляются через интерфейс и хранятся в БД.
 
+# Реестр устройств — этап 7, пока не используется.
 devices:
   notify_new: true
   default_dns_mode: observe         # observe | redirect | block | exempt

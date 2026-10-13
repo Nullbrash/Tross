@@ -109,12 +109,17 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	if s.opts.System != nil {
 		sys = s.opts.System()
 	}
+	var drops uint64
+	if s.opts.EventDrops != nil {
+		drops = s.opts.EventDrops()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"uptime_seconds": int64(time.Since(s.started).Seconds()),
 		"goroutines":     runtime.NumGoroutine(),
 		"go_heap_mb":     float64(ms.HeapAlloc) / (1 << 20),
 		"go_sys_mb":      float64(ms.Sys) / (1 << 20),
 		"db_size_bytes":  s.opts.Store.SizeBytes(),
+		"event_drops":    drops,
 		"system":         sys, // последняя поминутная выборка; null вне Linux
 		"links":          links,
 	})

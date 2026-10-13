@@ -129,3 +129,44 @@ func TestRunFailsOnBusyPort(t *testing.T) {
 		t.Fatal("expected listen error on busy port")
 	}
 }
+
+// TestDryRunWithoutDataDirKeepsStoreInMemory — «сухой» запуск без каталога
+// данных не создаёт файлов (на машине разработчика путь по умолчанию
+// оказался бы в корне текущего диска).
+func TestDryRunWithoutDataDirKeepsStoreInMemory(t *testing.T) {
+	port := freePort(t)
+	cfg, err := config.Parse([]byte(strings.ReplaceAll(testConfig, "%PORT%", port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SetDataDir("")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	}()
+	var m struct {
+		DBSize *int64 `json:"db_size_bytes"`
+	}
+	for deadline := time.Now().Add(3 * time.Second); ; {
+		resp, err := http.Get("http://127.0.0.1:" + port + "/api/metrics")
+		if err == nil {
+			err = json.NewDecoder(resp.Body).Decode(&m)
+			resp.Body.Close()
+		}
+		if err == nil && m.DBSize != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("metrics not served: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if *m.DBSize != 0 {
+		t.Fatalf("db size %d: store must live in memory", *m.DBSize)
+	}
+}

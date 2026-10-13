@@ -164,6 +164,29 @@ func TestSetupTeardownIdempotent(t *testing.T) {
 	}
 }
 
+// TestCleanupWithoutSpec — очистка, когда конфиг не читается (пустая
+// спецификация): правила и таблица снимаются, маршруты в таблицах каналов
+// остаются — их номера известны только из конфига.
+func TestCleanupWithoutSpec(t *testing.T) {
+	ctx := context.Background()
+	s := newSystem(t)
+	if err := s.Setup(ctx, standSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := Cleanup(ctx, s.log, Spec{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(ownedRules(t)); n != 0 {
+		t.Fatalf("rules left: %d", n)
+	}
+	if _, err := run(t, "nft", "list", "table", "inet", "tross"); err == nil {
+		t.Fatal("policy table left")
+	}
+	if out, _ := run(t, "ip", "route", "show", "table", "101"); !strings.Contains(out, "default") {
+		t.Fatalf("link table routes are kept without a spec, got %q", out)
+	}
+}
+
 // TestCleanupAfterCrash — разметка «упавшего» процесса (Setup без Teardown)
 // снимается Cleanup без его состояния; NAT остаётся.
 func TestCleanupAfterCrash(t *testing.T) {

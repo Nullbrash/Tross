@@ -59,12 +59,14 @@ func (b *balancer) apply(ctx context.Context) {
 	}
 	shares := decision.Balance(b.policy, status)
 	if !slices.Equal(shares, b.current) {
+		// При ошибке current не меняется — следующий пересчёт повторит; сброс
+		// соединений упавшего канала ниже от неё не зависит.
 		if err := b.dp.SetBalance(ctx, shares); err != nil {
 			b.log.Error("balance apply failed", "err", err)
-			return
+		} else {
+			b.log.Info("balance", "shares", shares)
+			b.current = shares
 		}
-		b.log.Info("balance", "shares", shares)
-		b.current = shares
 	}
 
 	now := make(map[model.LinkID]bool, len(status))

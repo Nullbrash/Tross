@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Полная проверка без make (на Windows — из Git Bash): форматирование, vet
+# под хост, linux и linux+integration, staticcheck (прогоны по ОС
+# объединяются), модульные тесты, сборка под linux и core/ под Android.
+# Интеграционные тесты стенда — отдельно: scripts/lab-sync itest 2.
+#
+#   scripts/check
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+command -v go >/dev/null || { echo "check: go not in PATH" >&2; exit 2; }
+
+LINT_TOOLCHAIN=go1.26.9 # staticcheck v0.8.1 не читает формат Go 1.27
+STATICCHECK=honnef.co/go/tools/cmd/staticcheck@v0.8.1
+TOOLS=$PWD/bin/tools
+SC=$TOOLS/staticcheck$(go env GOEXE)
+
+step() { echo "== $*"; }
+
+step gofmt
+bad=$(gofmt -l .)
+[ -z "$bad" ] || { echo "not formatted:"; echo "$bad"; exit 1; }
+
+step "go vet (host, linux, linux+integration)"
+go vet ./...
+GOOS=linux GOARCH=amd64 go vet ./...
+GOOS=linux GOARCH=amd64 go vet -tags integration ./...
+
+step staticcheck
+mkdir -p "$TOOLS"
+[ -x "$SC" ] || GOTOOLCHAIN=$LINT_TOOLCHAIN GOBIN=$TOOLS go install "$STATICCHECK"
+# Объединение (-merge): иначе код, используемый только в *_linux.go, на
+# хосте числится неиспользуемым.
+GOTOOLCHAIN=$LINT_TOOLCHAIN "$SC" -f binary ./... >"$TOOLS/sc-host.bin"
+GOTOOLCHAIN=$LINT_TOOLCHAIN GOOS=linux GOARCH=amd64 "$SC" -f binary ./... >"$TOOLS/sc-linux.bin"
+GOTOOLCHAIN=$LINT_TOOLCHAIN GOOS=linux GOARCH=amd64 "$SC" -tags integration -f binary ./... >"$TOOLS/sc-itest.bin"
+GOTOOLCHAIN=$LINT_TOOLCHAIN "$SC" -merge "$TOOLS/sc-host.bin" "$TOOLS/sc-linux.bin" "$TOOLS/sc-itest.bin"
+
+step "go test"
+go test ./...
+
+step "build linux/amd64 (static) and core/ for android"
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/... # несколько пакетов — без выходных файлов
+GOOS=android GOARCH=arm64 go build ./core/...
+
+echo "CHECK PASSED"

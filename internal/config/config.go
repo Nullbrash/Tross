@@ -93,7 +93,8 @@ type Monitor struct {
 	Targets  []netip.Addr  `yaml:"targets"`
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
-	// Window — сколько последних проб учитывать в задержке, джиттере и потерях.
+	// Window — сколько последних раундов проб учитывать в задержке, джиттере и
+	// потерях (проб в окне больше: по пробе к каждой цели за раунд).
 	Window int `yaml:"window"`
 	// FailAfter / RecoverAfter — гистерезис: подряд неудачных раундов до «down»
 	// и подряд удачных до возврата в «up».
@@ -262,6 +263,30 @@ func Parse(data []byte) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// ApplyFlags применяет флаги -dry-run и -data-dir. Без явного -data-dir
+// «сухой» запуск не создаёт файлов (база в памяти): на машине разработчика
+// путь по умолчанию оказался бы в корне текущего диска.
+func (c *Config) ApplyFlags(dryRun bool, dataDir string) {
+	if dryRun {
+		c.Daemon.DryRun = true
+	}
+	switch {
+	case dataDir != "":
+		c.SetDataDir(dataDir)
+	case c.Daemon.DryRun:
+		c.SetDataDir("")
+	}
+}
+
+// SetDataDir подменяет daemon.data_dir (флаг -data-dir) вместе с выведенными
+// из него умолчаниями; пустая строка — без каталога (база в памяти).
+func (c *Config) SetDataDir(dir string) {
+	if c.Proxy.WorkDir == defaultWorkDir(c.Daemon.DataDir) && dir != "" {
+		c.Proxy.WorkDir = defaultWorkDir(dir)
+	}
+	c.Daemon.DataDir = dir
 }
 
 // ModelLinks — каналы в виде моделей core.

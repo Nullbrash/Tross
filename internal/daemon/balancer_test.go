@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"tross/core/decision"
 	"tross/core/event"
 	"tross/core/model"
 	"tross/internal/dataplane"
@@ -54,5 +56,32 @@ func TestBalancerFollowsMonitorAndFlushes(t *testing.T) {
 	}
 	if !slices.Equal(ops, want) {
 		t.Fatalf("ops:\n%s\nwant:\n%s", strings.Join(ops, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// failingBalance — dataplane, у которого не применяется распределение.
+type failingBalance struct{ *dataplane.Fake }
+
+func (failingBalance) SetBalance(context.Context, []decision.LinkShare) error {
+	return errors.New("nft: busy")
+}
+
+func TestBalancerFlushesEvenIfBalanceFails(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	links := []model.Link{{ID: "isp1", Kind: model.LinkKindWired}, {ID: "isp2", Kind: model.LinkKindWired}}
+	mon := linkmon.NewFake(links, event.NewBus(), time.Hour, 1)
+	dp := failingBalance{dataplane.NewFake(log)}
+	b := &balancer{log: log, dp: dp, mon: mon, policy: model.Policy{Selector: model.SelectOrdered}}
+	ctx := context.Background()
+
+	mon.Tick()
+	b.apply(ctx)
+	mon.ForceState("isp1", model.LinkStateDown)
+	mon.Tick()
+	b.apply(ctx)
+	// Распределение не применилось, но соединения упавшего канала сброшены —
+	// иначе застрявшие потоки ждали бы, пока ошибка пройдёт.
+	if ops := dp.Ops(); !slices.Equal(ops, []string{"flush-conntrack [isp1]"}) {
+		t.Fatalf("ops = %v", ops)
 	}
 }

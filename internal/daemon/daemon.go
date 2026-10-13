@@ -41,13 +41,14 @@ type Options struct {
 }
 
 // Run работает до отмены ctx (сигнал) или фатальной ошибки модуля.
-// При любом исходе снимает правила dataplane.
+// При любом исходе снимает разметку dataplane; NAT остаётся — без демона
+// сеть работает через основную таблицу маршрутизации.
 func Run(ctx context.Context, opts Options) error {
 	cfg, log := opts.Config, opts.Log
 	log.Info("trossd starting", "version", opts.Version, "dry_run", cfg.Daemon.DryRun, "links", len(cfg.Links))
 
 	bus := event.NewBus()
-	st, err := openStore(cfg.Daemon.DataDir)
+	st, err := openStore(cfg.Daemon.DataDir, log)
 	if err != nil {
 		return err
 	}
@@ -86,6 +87,7 @@ func Run(ctx context.Context, opts Options) error {
 			Store:           st,
 			Logs:            logs,
 			System:          coll.Last,
+			EventDrops:      bus.Dropped,
 			AllowedNetworks: cfg.API.AllowedNetworks,
 			Version:         opts.Version,
 			DryRun:          cfg.Daemon.DryRun,
@@ -155,7 +157,12 @@ func Run(ctx context.Context, opts Options) error {
 	return runErr
 }
 
-func openStore(dir string) (*store.SQLite, error) {
+// openStore — база в каталоге данных; пустой каталог — база в памяти.
+func openStore(dir string, log *slog.Logger) (*store.SQLite, error) {
+	if dir == "" {
+		log.Info("store in memory: no data dir (dry run without -data-dir)")
+		return store.Open("", store.DefaultRetention())
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("data dir: %w", err)
 	}
@@ -175,6 +182,15 @@ func Cleanup(ctx context.Context, cfg *config.Config, log *slog.Logger, purge bo
 	ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 	defer cancel()
 	return dataplane.Cleanup(ctx, log, dataplaneSpec(cfg), purge)
+}
+
+// CleanupWithoutConfig — Cleanup, когда конфиг не читается: таблицы nft и
+// ip rule демона снимаются (их не надо знать заранее), маршруты таблиц
+// каналов остаются — их номера знает только конфиг.
+func CleanupWithoutConfig(ctx context.Context, log *slog.Logger, purge bool) error {
+	ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+	defer cancel()
+	return dataplane.Cleanup(ctx, log, dataplane.Spec{}, purge)
 }
 
 func newDataplane(cfg *config.Config, log *slog.Logger) (dataplane.Dataplane, error) {

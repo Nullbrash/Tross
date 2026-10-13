@@ -22,7 +22,9 @@ type Options struct {
 	Store   store.Store
 	Logs    *logring.Ring
 	// System — последняя выборка загрузки машины; nil — выборок нет.
-	System          func() *store.SystemSample
+	System func() *store.SystemSample
+	// EventDrops — сколько событий шина потеряла на переполненных подписчиках.
+	EventDrops      func() uint64
 	AllowedNetworks []netip.Prefix
 	Version         string
 	DryRun          bool

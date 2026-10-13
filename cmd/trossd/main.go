@@ -35,17 +35,19 @@ func run() int {
 		return 0
 	}
 
+	// SIGHUP — как остановка: без обработчика процесс умер бы, не сняв правила.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "trossd: config:", err)
+		if *cleanup || *purge {
+			return cleanupWithoutConfig(ctx, *purge)
+		}
 		return 2
 	}
-	if *dryRun {
-		cfg.Daemon.DryRun = true
-	}
-	if *dataDir != "" {
-		cfg.Daemon.DataDir = *dataDir
-	}
+	cfg.ApplyFlags(*dryRun, *dataDir)
 
 	logs := logring.New(cfg.Log.RingSize)
 	log, err := newLogger(os.Stderr, cfg.Log, logs)
@@ -53,9 +55,6 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "trossd:", err)
 		return 2
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	if *cleanup || *purge {
 		if err := daemon.Cleanup(ctx, cfg, log, *purge); err != nil {
@@ -71,6 +70,18 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// cleanupWithoutConfig — очистка после аварии, когда конфиг уже не читается:
+// снимается то, что конфига не требует; код возврата всё равно ошибочный.
+func cleanupWithoutConfig(ctx context.Context, purge bool) int {
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := daemon.CleanupWithoutConfig(ctx, log, purge); err != nil {
+		log.Error("trossd cleanup without config failed", "err", err)
+	} else {
+		log.Warn("trossd cleanup without config: policy rules removed, routes in link tables left")
+	}
+	return 1
 }
 
 func newLogger(w io.Writer, c config.Log, ring *logring.Ring) (*slog.Logger, error) {

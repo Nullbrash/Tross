@@ -183,7 +183,7 @@ func TestStatsAndMetrics(t *testing.T) {
 	}
 	rec = do(h, http.MethodGet, "/api/metrics", "127.0.0.1:1")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"goroutines"`) || !strings.Contains(rec.Body.String(), `"rx_bytes"`) ||
-		!strings.Contains(rec.Body.String(), `"system":null`) {
+		!strings.Contains(rec.Body.String(), `"system":null`) || !strings.Contains(rec.Body.String(), `"event_drops":0`) {
 		t.Fatalf("metrics: %d %s", rec.Code, rec.Body.String())
 	}
 }

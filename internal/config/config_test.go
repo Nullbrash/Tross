@@ -77,6 +77,22 @@ func TestDefaults(t *testing.T) {
 	if !*cfg.DNS.FirefoxCanaryNXDomain || cfg.Devices.DefaultDNSMode != model.DNSObserve {
 		t.Error("dns/devices defaults not applied")
 	}
+	// -data-dir переносит и выведенные из каталога умолчания.
+	cfg.SetDataDir("/srv/tross")
+	if cfg.Daemon.DataDir != "/srv/tross" || cfg.Proxy.WorkDir != "/srv/tross/mihomo" {
+		t.Errorf("after SetDataDir: data_dir %q, work_dir %q", cfg.Daemon.DataDir, cfg.Proxy.WorkDir)
+	}
+}
+
+func TestSetDataDirKeepsExplicitWorkDir(t *testing.T) {
+	cfg, err := Parse([]byte(strings.Replace(minimal, "links:", "proxy: { work_dir: /opt/mihomo }\nlinks:", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.SetDataDir("/srv/tross")
+	if cfg.Proxy.WorkDir != "/opt/mihomo" {
+		t.Errorf("explicit work_dir must stay, got %q", cfg.Proxy.WorkDir)
+	}
 }
 
 func TestLoadLabConfig(t *testing.T) {
@@ -217,6 +233,22 @@ func TestValidationErrors(t *testing.T) {
 			yaml: strings.Replace(minimal, "192.168.1.0/24", "fd00::/64", 1),
 			want: "only IPv4",
 		},
+		"ipv6 api listen": {
+			yaml: minimal + "api: { listen: '[::1]:8080' }\n",
+			want: "api.listen",
+		},
+		"api listen on all addresses": {
+			yaml: minimal + "api: { listen: ':8080' }\n",
+			want: "api.listen",
+		},
+		"ipv6 allowed network": {
+			yaml: minimal + "api: { allowed_networks: ['::1/128'] }\n",
+			want: "api.allowed_networks",
+		},
+		"ipv6 dns listen": {
+			yaml: strings.Replace(minimal, `"192.168.1.1:53"`, `"[fd00::1]:53"`, 1),
+			want: "dns.listen",
+		},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -228,5 +260,30 @@ func TestValidationErrors(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, c.want)
 			}
 		})
+	}
+}
+
+func TestApplyFlags(t *testing.T) {
+	parse := func() *Config {
+		cfg, err := Parse([]byte(minimal))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	cfg := parse()
+	cfg.ApplyFlags(true, "")
+	if !cfg.Daemon.DryRun || cfg.Daemon.DataDir != "" {
+		t.Errorf("dry run without -data-dir must keep the store in memory: %+v", cfg.Daemon)
+	}
+	cfg = parse()
+	cfg.ApplyFlags(true, "bin/data")
+	if cfg.Daemon.DataDir != "bin/data" {
+		t.Errorf("explicit -data-dir: %+v", cfg.Daemon)
+	}
+	cfg = parse()
+	cfg.ApplyFlags(false, "")
+	if cfg.Daemon.DryRun || cfg.Daemon.DataDir != "/var/lib/tross" {
+		t.Errorf("real mode keeps data_dir: %+v", cfg.Daemon)
 	}
 }

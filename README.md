@@ -39,6 +39,9 @@ make test
 make lint          # gofmt, go vet (хост и linux), staticcheck
 ```
 
+Без make (например, в Git Bash на Windows) — вся проверка одной командой:
+`scripts/check` (форматирование, vet, staticcheck, тесты, сборка под Linux).
+
 ## Запуск в «сухом» режиме
 
 Ничего не меняет в системе; работает и не на Linux.
@@ -57,8 +60,15 @@ curl http://127.0.0.1:8080/api/links
 ```sh
 make build-linux
 install -m 0755 bin/linux-amd64/trossd /usr/local/bin/trossd
-install -D -m 0640 configs/example.yaml /etc/tross/config.yaml   # и отредактировать
+install -D -m 0640 configs/example.yaml /etc/tross/config.yaml
 install -m 0644 deploy/systemd/trossd.service /etc/systemd/system/
+```
+
+Перед запуском отредактируйте `/etc/tross/config.yaml`: в примере стоит
+`daemon.dry_run: true` — так служба запустится, но ничего в сети не изменит.
+Нужно `dry_run: false`, свои каналы (`links`) и домашняя сеть (`lan`). Затем:
+
+```sh
 systemctl daemon-reload && systemctl enable --now trossd
 ```
 
