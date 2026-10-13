@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -235,7 +234,6 @@ func httpCheckOptions(h config.HTTPCheck) linkmon.HTTPCheckOptions {
 func dataplaneSpec(cfg *config.Config) dataplane.Spec {
 	spec := dataplane.Spec{
 		LANInterface: cfg.LAN.Interface,
-		LANNetworks:  append([]netip.Prefix(nil), cfg.LAN.Networks...),
 	}
 	for _, l := range cfg.Links {
 		spec.Links = append(spec.Links, dataplane.LinkSpec{

@@ -40,7 +40,6 @@ func standSpec() Spec {
 	}
 	return Spec{
 		LANInterface: "lan",
-		LANNetworks:  []netip.Prefix{netip.MustParsePrefix("192.168.77.0/24")},
 		Links:        []LinkSpec{link("isp1", "wan1", 10, 1), link("isp2", "wan2", 20, 2), link("lte", "wan3", 100, 3)},
 	}
 }
@@ -161,6 +160,41 @@ func TestSetupTeardownIdempotent(t *testing.T) {
 	}
 	if _, err := run(t, "nft", "list", "table", "inet", "tross_nat"); err == nil {
 		t.Fatal("NAT table left after purge")
+	}
+}
+
+// TestRepairRoutesAfterInterfaceDown — выключенный и снова включённый
+// интерфейс канала теряет маршрут в таблице канала (ядро удаляет его вместе с
+// интерфейсом); RepairRoutes ставит его заново, и трафик снова идёт.
+func TestRepairRoutesAfterInterfaceDown(t *testing.T) {
+	ctx := context.Background()
+	s := newSystem(t)
+	if err := s.Setup(ctx, standSpec()); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"link", "set", "wan1", "down"}, {"link", "set", "wan1", "up"}} {
+		if out, err := run(t, "ip", args...); err != nil {
+			t.Fatalf("ip %v: %v\n%s", args, err, out)
+		}
+	}
+	if out, _ := run(t, "ip", "route", "show", "table", "101"); strings.Contains(out, "default") {
+		t.Fatalf("precondition: route must be gone after link down, got %q", out)
+	}
+	if got, _ := fetch(t, 100_000); got == 100_000 {
+		t.Fatal("precondition: traffic of isp1 must fail without its route")
+	}
+	if err := s.RepairRoutes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := run(t, "ip", "route", "show", "table", "101"); !strings.Contains(out, "default via 100.64.1.1 dev wan1") {
+		t.Fatalf("route not restored: %q", out)
+	}
+	if got, err := fetch(t, 100_000); got != 100_000 {
+		t.Fatalf("traffic after repair: %d bytes, %v", got, err)
+	}
+	// Повторная сверка при целом маршруте ничего не меняет и не ошибается.
+	if err := s.RepairRoutes(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -17,10 +17,7 @@ import (
 	"tross/core/model"
 )
 
-var (
-	ErrNotImplemented = errors.New("dataplane: not implemented yet")
-	ErrUnsupportedOS  = errors.New("dataplane: kernel mode is supported only on linux; use dry-run")
-)
+var ErrUnsupportedOS = errors.New("dataplane: kernel mode is supported only on linux; use dry-run")
 
 // SetName — имя множества адресов nftables, наполняемого резолвером.
 type SetName string
@@ -41,7 +38,6 @@ type LinkSpec struct {
 // Spec — базовая разметка, которую демон ставит при старте.
 type Spec struct {
 	LANInterface string
-	LANNetworks  []netip.Prefix
 	Links        []LinkSpec
 }
 
@@ -60,4 +56,8 @@ type Dataplane interface {
 	AddToSet(ctx context.Context, set SetName, addr netip.Addr, ttl time.Duration) error
 	// FlushConntrack сбрасывает соединения, закреплённые за упавшим каналом.
 	FlushConntrack(ctx context.Context, id model.LinkID) error
+	// RepairRoutes ставит заново маршруты таблиц каналов, если их нет или
+	// сменился шлюз из DHCP: ядро удаляет маршрут вместе с пересозданным или
+	// выключенным интерфейсом, и без этого канал не вернулся бы до перезапуска.
+	RepairRoutes(ctx context.Context) error
 }

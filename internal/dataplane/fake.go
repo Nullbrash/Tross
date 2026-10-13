@@ -64,6 +64,10 @@ func (f *Fake) AddToSet(_ context.Context, set SetName, addr netip.Addr, ttl tim
 	return nil
 }
 
+// RepairRoutes в «сухом» режиме чинить нечего; не записывается — вызывается
+// по таймеру и засорял бы журнал вызовов.
+func (f *Fake) RepairRoutes(context.Context) error { return nil }
+
 func (f *Fake) FlushConntrack(_ context.Context, id model.LinkID) error {
 	f.record("flush-conntrack", id)
 	return nil

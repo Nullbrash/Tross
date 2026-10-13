@@ -11,12 +11,13 @@ import (
 	"tross/core/model"
 )
 
-// Имена и метки в ядре, которыми владеет демон. Teardown удаляет только их.
+// Имена и метки в ядре, которыми владеет демон: снимаются только они.
 const (
 	nftTable = "tross"
 	// nftNATTable — masquerade на каналах. Отдельно от nftTable: остановка
 	// демона её не снимает, чтобы домашняя сеть продолжала работать через
-	// основную таблицу маршрутизации (fail-open); убирает только Purge.
+	// основную таблицу маршрутизации (fail-open); убирает только
+	// Cleanup с purge (удаление Tross).
 	nftNATTable = "tross_nat"
 	// LinkMarkMask — биты fwmark/ct mark с номером канала (совпадает с config.LinkMarkMask).
 	LinkMarkMask uint32 = 0x0000ff00

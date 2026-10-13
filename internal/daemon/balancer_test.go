@@ -85,3 +85,26 @@ func TestBalancerFlushesEvenIfBalanceFails(t *testing.T) {
 		t.Fatalf("ops = %v", ops)
 	}
 }
+
+// countingRepair — dataplane, считающий сверки маршрутов.
+type countingRepair struct {
+	*dataplane.Fake
+	repairs int
+}
+
+func (c *countingRepair) RepairRoutes(context.Context) error {
+	c.repairs++
+	return nil
+}
+
+func TestBalancerTickRepairsRoutes(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mon := linkmon.NewFake([]model.Link{{ID: "isp1", Kind: model.LinkKindWired}}, event.NewBus(), time.Hour, 1)
+	dp := &countingRepair{Fake: dataplane.NewFake(log)}
+	b := &balancer{log: log, dp: dp, mon: mon, policy: model.Policy{Selector: model.SelectOrdered}}
+	mon.Tick()
+	b.tick(context.Background())
+	if dp.repairs != 1 || len(dp.Ops()) != 1 {
+		t.Fatalf("tick must repair routes and rebalance: repairs %d, ops %v", dp.repairs, dp.Ops())
+	}
+}

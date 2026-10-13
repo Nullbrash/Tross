@@ -14,7 +14,8 @@ import (
 )
 
 // rebalanceEvery — пересчёт по таймеру: веса зависят от измеренной скорости,
-// а она меняется без смены состояния каналов.
+// а она меняется без смены состояния каналов; заодно сверяются маршруты
+// каналов (интерфейс могли пересоздать).
 const rebalanceEvery = 30 * time.Second
 
 // balancer связывает монитор с dataplane: распределение новых соединений
@@ -45,9 +46,18 @@ func (b *balancer) run(ctx context.Context, events <-chan event.Event) {
 			}
 			b.apply(ctx)
 		case <-t.C:
-			b.apply(ctx)
+			b.tick(ctx)
 		}
 	}
+}
+
+// tick — работа по таймеру: сначала вернуть пропавшие маршруты каналов (без
+// них пробы монитора не проходят и канал не вернулся бы), затем пересчёт.
+func (b *balancer) tick(ctx context.Context) {
+	if err := b.dp.RepairRoutes(ctx); err != nil {
+		b.log.Warn("repair link routes", "err", err)
+	}
+	b.apply(ctx)
 }
 
 func (b *balancer) apply(ctx context.Context) {

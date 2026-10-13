@@ -175,6 +175,66 @@ func (s *System) routeLocked(l LinkSpec) error {
 	})
 }
 
+// RepairRoutes сверяет маршрут по умолчанию в таблице каждого канала с
+// нужным (интерфейс и шлюз — из конфига или DHCP) и ставит заново, если его
+// нет или он устарел. Канал, которому маршрут поставить нельзя (интерфейса
+// нет), помечается без маршрута — SetBalance не включит его, пока не починится.
+func (s *System) RepairRoutes(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.up {
+		return nil
+	}
+	var errs []error
+	for _, l := range s.spec.Links {
+		ok, err := s.routeCurrentLocked(l)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if ok {
+			continue
+		}
+		if err := s.routeLocked(l); err != nil {
+			if s.routed[l.Link.ID] {
+				s.log.Warn("dataplane: link route lost and cannot be restored yet", "link", l.Link.ID, "err", err)
+			}
+			s.routed[l.Link.ID] = false
+			continue
+		}
+		s.log.Info("dataplane: link route restored", "link", l.Link.ID)
+		s.routed[l.Link.ID] = true
+	}
+	return errors.Join(errs...)
+}
+
+// routeCurrentLocked — в таблице канала есть маршрут по умолчанию через его
+// интерфейс и нужный шлюз.
+func (s *System) routeCurrentLocked(l LinkSpec) (bool, error) {
+	link, err := netlink.LinkByName(l.Link.Interface)
+	if err != nil {
+		return false, nil // интерфейса нет — чинить нечем, это не ошибка сверки
+	}
+	want := l.Gateway
+	if !want.IsValid() {
+		// Шлюз DHCP сейчас неизвестен — годится любой маршрут через интерфейс:
+		// иначе короткая пропажа маршрута в main выкинула бы рабочий канал.
+		want, _ = dhcpGateway(link)
+	}
+	routes, err := netlink.RouteListFiltered(unix.AF_INET, &netlink.Route{Table: l.Table}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return false, fmt.Errorf("dataplane: routes of table %d: %w", l.Table, err)
+	}
+	for _, r := range routes {
+		if (r.Dst == nil || r.Dst.IP.IsUnspecified()) && r.LinkIndex == link.Attrs().Index {
+			gw, _ := netip.AddrFromSlice(r.Gw.To4())
+			if !want.IsValid() || gw == want {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // dhcpGateway — шлюз из маршрута по умолчанию в main через этот интерфейс
 // (его ставит DHCP-клиент канала).
 func dhcpGateway(link netlink.Link) (netip.Addr, error) {
