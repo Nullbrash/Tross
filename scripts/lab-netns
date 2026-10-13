@@ -12,6 +12,9 @@
 #   shape <isp1|isp2|lte> <rtt_ms> <jitter_ms> <loss_pct> <down_mbit|0> <up_mbit|0>
 #   break <isp1|isp2|lte> [loss|down]   обрыв: 100 % потерь (по умолчанию) или нет линка
 #   restore <isp1|isp2|lte>             вернуть профиль канала и линк
+#   recreate <isp1|isp2|lte>            удалить и создать заново интерфейс канала в
+#                                       tl-tross (как переподключённый USB-модем:
+#                                       новый индекс, маршруты через него теряются)
 #   simple-route <isp1|isp2|lte|off>    маршрут и NAT без демона (для замеров стенда)
 #   offload <on|off>                    off — пакеты настоящего размера (честные замеры ЦП)
 #   selftest                            проверить стенд без демона
@@ -193,6 +196,19 @@ cmd_break() {
 	echo "$l broken ($mode)"
 }
 
+cmd_recreate() {
+	need_root; is_up || die "lab is down"
+	local l=${1:?link} ns i; ns=$(ns_of "$l"); i=${IDX[$l]}
+	nsx tl-tross ip link del "${WAN[$l]}" # удаляет и пару cpe в netns провайдера
+	ip link add "${WAN[$l]}" netns tl-tross type veth peer name cpe netns "$ns"
+	nsx tl-tross ip addr add "100.64.$i.2/30" dev "${WAN[$l]}"
+	nsx "$ns" ip addr add "100.64.$i.1/30" dev cpe
+	nsx tl-tross ip link set "${WAN[$l]}" up
+	nsx "$ns" ip link set cpe up
+	apply_profile "$l"
+	echo "$l recreated: ${WAN[$l]} index $(nsx tl-tross cat "/sys/class/net/${WAN[$l]}/ifindex")"
+}
+
 cmd_restore() {
 	need_root; is_up || die "lab is down"
 	local l=${1:?link} ns; ns=$(ns_of "$l")
@@ -291,9 +307,10 @@ case ${1:-} in
 	shape) shift; cmd_shape "$@" ;;
 	break) shift; cmd_break "$@" ;;
 	restore) shift; cmd_restore "$@" ;;
+	recreate) shift; cmd_recreate "$@" ;;
 	simple-route) shift; cmd_simple_route "$@" ;;
 	offload) shift; cmd_offload "$@" ;;
 	selftest) cmd_selftest ;;
 	exec) shift; need_root; nsx "$@" ;;
-	*) sed -n '2,20p' "$0"; exit 2 ;;
+	*) sed -n '2,22p' "$0"; exit 2 ;;
 esac

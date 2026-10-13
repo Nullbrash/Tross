@@ -48,6 +48,7 @@ func benchLinks() []dataplane.LinkSpec {
 }
 
 type bench struct {
+	dp     dataplane.Dataplane
 	mon    *System
 	bus    *event.Bus
 	cancel context.CancelFunc
@@ -99,7 +100,7 @@ func start(t *testing.T) *bench {
 	done := make(chan struct{})
 	go func() { _ = m.Run(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
-	b := &bench{mon: m.(*System), bus: bus, cancel: cancel}
+	b := &bench{dp: dp, mon: m.(*System), bus: bus, cancel: cancel}
 	for _, id := range []model.LinkID{"isp1", "isp2", "lte"} {
 		b.wait(t, id, model.LinkStateUp, 8*time.Second)
 	}
@@ -345,4 +346,25 @@ func TestSpeedTestFrozenTransferIsBlockNotSpeed(t *testing.T) {
 	if !errors.Is(err, ErrTransferFrozen) {
 		t.Fatalf("want ErrTransferFrozen, got %v", err)
 	}
+}
+
+// TestProbeSocketFollowsRecreatedInterface — интерфейс канала пересоздан (как
+// переподключённый USB-модем): маршрут возвращает dataplane, а монитор
+// открывает сокет проб заново — иначе ICMP-пробы, а с ними и распознавание
+// «белых списков», молчали бы навсегда (канал держался бы на одной TCP-пробе).
+func TestProbeSocketFollowsRecreatedInterface(t *testing.T) {
+	b := start(t)
+	labCmd(t, "recreate", "lte")
+	t.Cleanup(func() { labCmd(t, "restore", "lte") })
+	if err := b.dp.RepairRoutes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// «Белые списки» видны только ICMP-пробам: restricted — значит, сокет живой.
+	nftIn(t, "tl-lte", "table ip tl_wl { chain f { type filter hook forward priority 0; ip daddr 203.0.113.0/24 ip daddr != 203.0.113.3 drop; }; }")
+	t.Cleanup(func() {
+		_ = exec.Command("ip", "netns", "exec", "tl-lte", "nft", "delete", "table", "ip", "tl_wl").Run()
+	})
+	since := time.Now()
+	b.wait(t, "lte", model.LinkStateRestricted, 20*time.Second)
+	t.Logf("measure: whitelist mode detected %v after interface recreation", time.Since(since).Round(100*time.Millisecond))
 }

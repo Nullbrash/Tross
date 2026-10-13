@@ -28,9 +28,9 @@ import (
 	"tross/core/model"
 )
 
-// System — монитор каналов: ICMP-пробы через каждый канал (метка + привязка к
-// интерфейсу), запасная TCP-проба, гистерезис core/linkhealth, пассивная и
-// активная скорость.
+// System — монитор каналов: ICMP- и TCP-пробы через каждый канал (метка +
+// привязка к интерфейсу), гистерезис core/linkhealth, HTTP-проверка,
+// пассивная и активная скорость.
 type System struct {
 	opts  Options
 	links []*link
@@ -112,6 +112,13 @@ func (s *System) loop(ctx context.Context, l *link) {
 func (s *System) round(ctx context.Context, l *link) {
 	now := time.Now()
 	r := linkhealth.Round{At: now, Sent: len(l.probe.Targets), WLSent: len(l.probe.Whitelist)}
+	// Сокет привязан к индексу интерфейса: пересозданный интерфейс (USB-модем,
+	// телефон) — новый индекс, и старый сокет молчал бы навсегда.
+	if l.pinger != nil && !l.pinger.boundTo(l.probe.Link.Interface) {
+		s.opts.Log.Info("linkmon: interface recreated or gone, reopening probe socket", "link", l.probe.Link.ID)
+		l.pinger.close()
+		l.pinger = nil
+	}
 	if l.pinger == nil {
 		p, err := newPinger(l.probe.Link.Interface, l.probe.Mark, &s.probeBytes)
 		if err != nil {
@@ -566,9 +573,10 @@ func sockopts(iface string, mark uint32) func(network, address string, c syscall
 
 // pinger — raw ICMP-сокет одного канала; ответы сопоставляются по ID и Seq.
 type pinger struct {
-	conn  *net.IPConn
-	id    int
-	bytes *atomic.Uint64
+	conn    *net.IPConn
+	id      int
+	ifindex int // интерфейс на момент привязки
+	bytes   *atomic.Uint64
 
 	mu   sync.Mutex
 	seq  uint16
@@ -580,17 +588,27 @@ const ipHeader = 20
 var probePayload = []byte("trossprb")
 
 func newPinger(iface string, mark uint32, counter *atomic.Uint64) (*pinger, error) {
+	nl, err := netlink.LinkByName(iface)
+	if err != nil {
+		return nil, err
+	}
 	lc := net.ListenConfig{Control: sockopts(iface, mark)}
 	pc, err := lc.ListenPacket(context.Background(), "ip4:icmp", "0.0.0.0")
 	if err != nil {
 		return nil, err
 	}
-	p := &pinger{conn: pc.(*net.IPConn), id: rand.IntN(0xffff) + 1, bytes: counter, wait: map[uint16]chan time.Time{}}
+	p := &pinger{conn: pc.(*net.IPConn), id: rand.IntN(0xffff) + 1, ifindex: nl.Attrs().Index, bytes: counter, wait: map[uint16]chan time.Time{}}
 	go p.readLoop()
 	return p, nil
 }
 
 func (p *pinger) close() { p.conn.Close() }
+
+// boundTo — интерфейс с этим именем всё ещё тот, к которому привязан сокет.
+func (p *pinger) boundTo(iface string) bool {
+	nl, err := netlink.LinkByName(iface)
+	return err == nil && nl.Attrs().Index == p.ifindex
+}
 
 func (p *pinger) readLoop() {
 	buf := make([]byte, 1500)

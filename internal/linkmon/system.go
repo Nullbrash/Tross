@@ -39,7 +39,7 @@ type HTTPCheckOptions struct {
 }
 
 type SpeedTestOptions struct {
-	URLs         []string // по порядку: следующий — если предыдущий не отдал данных
+	URLs         []string // по порядку: следующий — если передача застыла или источник отдал заглушку
 	Hour, Minute int      // ночной замер (только нелимитированные каналы)
 	Duration     time.Duration
 	MaxBytes     int64
