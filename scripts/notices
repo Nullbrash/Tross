@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Тексты лицензий и NOTICE сторонних Go-модулей, вошедших в trossd для
+# Linux, — для раздачи бинарника (MIT, BSD и Apache-2.0 требуют прикладывать
+# их к бинарной копии). Источник — кэш модулей Go.
+#
+#   scripts/notices [файл=bin/THIRD_PARTY_NOTICES.txt]
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+out=${1:-bin/THIRD_PARTY_NOTICES.txt}
+mkdir -p "$(dirname "$out")"
+
+# На Windows (Git Bash) пути кэша модулей — в формате C:\…
+path_of() { if command -v cygpath >/dev/null; then cygpath -u "$1"; else printf '%s\n' "$1"; fi; }
+
+{
+	echo "Third-party software included in trossd (linux/amd64)"
+	echo "Tross itself is licensed under GNU GPL v3.0 (see LICENSE)."
+	GOOS=linux GOARCH=amd64 go list -deps \
+		-f '{{with .Module}}{{if not .Main}}{{.Path}}|{{.Version}}|{{.Dir}}{{end}}{{end}}' ./cmd/trossd |
+		sort -u |
+		while IFS='|' read -r mod ver dir; do
+			[ -n "$mod" ] || continue
+			dir=$(path_of "$dir")
+			echo
+			echo "================================================================"
+			echo "$mod $ver"
+			echo "================================================================"
+			found=0
+			# Список имён, а не шаблоны: на нечувствительной к регистру ФС
+			# LICENSE* и license* совпали бы с одним файлом дважды.
+			while read -r f; do
+				[ -f "$dir/$f" ] || continue
+				found=1
+				echo "--- $f"
+				cat "$dir/$f"
+			done < <(ls "$dir" | grep -iE '^(LICEN[CS]E|COPYING|NOTICE)')
+			[ "$found" = 1 ] || { echo "notices: no license file in $mod $ver" >&2; exit 1; }
+		done
+} >"$out"
+echo "written $out"

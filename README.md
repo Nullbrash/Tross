@@ -119,3 +119,7 @@ sudo scripts/lab-guard install       # сторож: перегрев, бата�
 Tross распространяется под [GNU General Public License v3.0](LICENSE).
 Сторонние компоненты, которые демон запускает отдельными программами
 (mihomo, zapret), — под собственными лицензиями.
+
+В бинарник `trossd` входят Go-библиотеки под лицензиями MIT, BSD и
+Apache-2.0. При раздаче бинарника приложите их тексты: `scripts/notices`
+собирает их в `bin/THIRD_PARTY_NOTICES.txt`.
