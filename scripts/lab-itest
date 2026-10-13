@@ -31,7 +31,12 @@ fails=0
 for r in $(seq 1 "$runs"); do
 	echo "=== run $r/$runs"
 	sudo -n "$lab" down >/dev/null
-	sudo -n "$lab" up >/dev/null
+	if ! sudo -n "$lab" up >/dev/null; then
+		echo "lab up failed, retrying once"
+		sudo -n "$lab" down >/dev/null
+		sleep 2
+		sudo -n "$lab" up >/dev/null
+	fi
 	for b in "${bins[@]}"; do
 		if ! sudo -n ip netns exec tl-tross env LAB_NETNS="$lab" LAB_MEASURE_OUT="${LAB_MEASURE_OUT:-}" \
 			"$b" -test.v -test.count=1 "${extra[@]}"; then

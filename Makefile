@@ -9,7 +9,7 @@ STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.1
 LINT_TOOLCHAIN := go1.26.9
 TOOLS       := $(CURDIR)/bin/tools
 
-.PHONY: all build build-linux run test lint vet vet-linux staticcheck fmt fmt-check tidy clean lab-sync lab-test lab-itest
+.PHONY: all build build-linux run test check lint vet vet-linux staticcheck fmt fmt-check tidy clean lab-sync lab-test lab-itest
 
 all: lint test build
 
@@ -30,6 +30,10 @@ run: build
 test:
 	$(GO) test ./...
 
+# Всё то же без make — scripts/check (на машинах, где make нет).
+check:
+	scripts/check
+
 lint: fmt-check vet vet-linux staticcheck
 
 vet:
@@ -40,6 +44,7 @@ vet-linux: export GOOS := linux
 vet-linux: export GOARCH := amd64
 vet-linux:
 	$(GO) vet ./...
+	$(GO) vet -tags integration ./...
 
 # staticcheck v0.8.1 не читает export data Go 1.27 — запускаем его под тулчейном 1.26
 # (go.mod допускает 1.26; при первом запуске go сам скачает этот тулчейн).
