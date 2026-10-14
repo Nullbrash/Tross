@@ -293,3 +293,13 @@ func TestPerTargetJitterAndBloat(t *testing.T) {
 		})
 	}
 }
+
+// Одна потеря в молодом окне — уже ≥ 5 %, но ещё не повод для degraded.
+func TestSingleLossInYoungWindow(t *testing.T) {
+	if s := feed(NewTracker(DefaultParams()), "glgggg"); last(s) != model.LinkStateUp {
+		t.Fatalf("one lost probe: %v, want up", s)
+	}
+	if s := feed(NewTracker(DefaultParams()), "gllggg"); last(s) != model.LinkStateDegraded {
+		t.Fatalf("two lost probes: %v, want degraded", s)
+	}
+}

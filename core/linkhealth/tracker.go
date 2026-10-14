@@ -19,7 +19,8 @@ type Params struct {
 	RecoverAfter int // удачных раундов до возврата из down/restricted и из degraded
 	DegradeAfter int // раундов с плохими метриками до degraded
 
-	DegradedLoss   float64       // доля потерь в окне
+	// Доля потерь в окне; судится не меньше чем по minLost потерянным пробам.
+	DegradedLoss   float64
 	DegradedJitter time.Duration // медиана по целям их среднего джиттера в окне
 	// Задержка цели «раздута» (bufferbloat), если её средняя ≥ RTTRatio × её
 	// минимальной в окне и разница ≥ RTTDelta: одно отношение срабатывает на
@@ -67,6 +68,7 @@ func (r Round) restricted() bool { return r.Recv == 0 && r.WLSent > 0 && r.WLRec
 type Metrics struct {
 	RTT, MinRTT, Jitter time.Duration
 	Loss                float64
+	Lost                int // потерянных проб в окне
 	Bloated             bool
 	BloatDetail         string // для причины degraded: сколько целей и худшая
 }
@@ -189,7 +191,7 @@ func (t *Tracker) set(at time.Time, s model.LinkState, why string) {
 
 func (t *Tracker) degradedReason(m Metrics) string {
 	switch {
-	case m.Loss >= t.p.DegradedLoss:
+	case m.Loss >= t.p.DegradedLoss && m.Lost >= minLost:
 		return fmt.Sprintf("loss %.1f%%", m.Loss*100)
 	case m.Jitter >= t.p.DegradedJitter:
 		return fmt.Sprintf("jitter %v", m.Jitter.Round(time.Millisecond))
@@ -198,6 +200,10 @@ func (t *Tracker) degradedReason(m Metrics) string {
 	}
 	return ""
 }
+
+// minLost — в молодом окне (после старта или восстановления) одна случайная
+// потеря уже даёт ≥ 5 %; на полном окне порог и так требует 5–6 потерь.
+const minLost = 2
 
 // bloatMinSamples — меньше ответов цели в окне — по ней «раздутость» не
 // судим: среднее из пары значений слишком шумное.
@@ -225,6 +231,7 @@ func (t *Tracker) metrics() Metrics {
 	}
 	if sent > 0 {
 		m.Loss = 1 - float64(recv)/float64(sent)
+		m.Lost = sent - recv
 	}
 	if n == 0 {
 		m.MinRTT = 0
