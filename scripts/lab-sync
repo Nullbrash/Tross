@@ -18,6 +18,11 @@ host=${TROSS_LAB_HOST:?set TROSS_LAB_HOST, e.g. in .lab.env}
 key=${TROSS_LAB_KEY:-$HOME/.ssh/tross_lab}
 remote=(ssh -i "$key" -o BatchMode=yes -o ConnectTimeout=10 "$host")
 
+# Пока на стенде идёт прогон (держит блокировку), код не подменяется: иначе
+# скрипты и бинарники сменились бы посреди тестов.
+"${remote[@]}" 'flock -n /run/lock/tross-lab.lock true' ||
+	{ echo "lab-sync: stand is busy — a run holds /run/lock/tross-lab.lock; try later" >&2; exit 3; }
+
 # Новая копия собирается рядом и подменяет старую целиком: удалённые
 # локально файлы не остаются на стенде.
 tar -C "$root" \

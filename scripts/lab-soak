@@ -17,6 +17,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# Один прогон на стенде за раз: два прогона поднимали и снимали бы один и тот
+# же стенд. Блокировка держится до выхода процесса.
+exec 9>>/run/lock/tross-lab.lock
+flock -n 9 || { echo "lab-soak: stand is busy — another run holds /run/lock/tross-lab.lock" >&2; exit 3; }
 total=${1:-8h}
 case $total in
 *h) secs=$((${total%h} * 3600)) ;;

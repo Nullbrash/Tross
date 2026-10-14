@@ -18,6 +18,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# Один прогон на стенде за раз: два прогона поднимали и снимали бы один и тот
+# же стенд. Блокировка держится до выхода процесса.
+exec 9>>/run/lock/tross-lab.lock
+flock -n 9 || { echo "lab-load: stand is busy — another run holds /run/lock/tross-lab.lock" >&2; exit 3; }
 export PATH=$HOME/sdk/go/bin:$PATH
 dur=${1:-60}
 modes=${2:-both}
