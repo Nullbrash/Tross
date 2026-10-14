@@ -117,7 +117,12 @@ func (b *bench) wait(t *testing.T, id model.LinkID, want model.LinkState, limit 
 			return time.Now()
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s: state %s (%s), want %s within %v", id, st.Health.State, st.Health.Reason, want, limit)
+			// Метрики и возраст снимка отличают «раунды идут, но метрики в норме»
+			// от «раунды встали».
+			h := st.Health
+			t.Fatalf("%s: state %s (%s), want %s within %v; loss %.1f%% rtt %v jitter %v, updated %v ago",
+				id, h.State, h.Reason, want, limit, h.Loss*100, h.RTT.Round(100*time.Microsecond),
+				h.Jitter.Round(100*time.Microsecond), time.Since(h.UpdatedAt).Round(100*time.Millisecond))
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -177,7 +182,7 @@ func TestSilentBreakDetectionAndRecovery(t *testing.T) {
 	}
 	for _, id := range []model.LinkID{"isp2", "lte"} {
 		if st, _ := b.mon.Status(id); st.Health.State != model.LinkStateUp {
-			t.Errorf("%s affected by isp1 break: %s", id, st.Health.State)
+			t.Errorf("%s affected by isp1 break: %s (%s)", id, st.Health.State, st.Health.Reason)
 		}
 	}
 
