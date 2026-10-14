@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
 	"tross/core/event"
 	"tross/core/linkhealth"
 	"tross/core/model"
+	"tross/core/profile"
 	"tross/internal/api"
 	"tross/internal/config"
 	"tross/internal/dataplane"
@@ -61,7 +63,11 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	if err := dp.Setup(ctx, dataplaneSpec(cfg)); err != nil {
+	spec, err := dataplaneSpec(cfg)
+	if err != nil {
+		return err
+	}
+	if err := dp.Setup(ctx, spec); err != nil {
 		return fmt.Errorf("dataplane setup: %w", err)
 	}
 	defer func() {
@@ -109,7 +115,10 @@ func Run(ctx context.Context, opts Options) error {
 	wg.Go(func() { logEvents(log, st, events) })
 	// Подписка до запуска монитора: первые смены состояний не теряются.
 	linkEvents, unsubscribeLinks := bus.Subscribe(64, event.TopicLinkState)
-	bal := &balancer{log: log, dp: dp, mon: mon, policy: cfg.Policies()[model.ClassDefault]}
+	bal, err := newBalancer(log, dp, mon, cfg.Policies())
+	if err != nil {
+		return fmt.Errorf("decision engine: %w", err)
+	}
 	wg.Go(func() { bal.run(runCtx, linkEvents) })
 	wg.Go(func() { coll.run(runCtx, collectEvery) })
 	if every := sdnotify.WatchdogInterval(); every > 0 {
@@ -180,7 +189,11 @@ func Cleanup(ctx context.Context, cfg *config.Config, log *slog.Logger, purge bo
 	}
 	ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 	defer cancel()
-	return dataplane.Cleanup(ctx, log, dataplaneSpec(cfg), purge)
+	spec, err := dataplaneSpec(cfg)
+	if err != nil {
+		return err
+	}
+	return dataplane.Cleanup(ctx, log, spec, purge)
 }
 
 // CleanupWithoutConfig — Cleanup, когда конфиг не читается: таблицы nft и
@@ -240,7 +253,7 @@ func httpCheckOptions(h config.HTTPCheck) linkmon.HTTPCheckOptions {
 	return o
 }
 
-func dataplaneSpec(cfg *config.Config) dataplane.Spec {
+func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
 	spec := dataplane.Spec{
 		LANInterface: cfg.LAN.Interface,
 	}
@@ -249,7 +262,26 @@ func dataplaneSpec(cfg *config.Config) dataplane.Spec {
 			Link: l.Model(), Table: l.Table, FwMark: l.FwMark, Gateway: l.GatewayAddr(),
 		})
 	}
-	return spec
+	cat, err := profile.Builtin()
+	if err != nil {
+		return spec, fmt.Errorf("service catalog: %w", err)
+	}
+	var classes []model.TrafficClass
+	policies := map[model.TrafficClass]dataplane.ClassPolicy{}
+	for _, cl := range cfg.Classes {
+		classes = append(classes, cl.ID)
+		var allowed []model.LinkID
+		if len(cl.Links) > 0 {
+			allowed = append(slices.Clone(cl.Links), cl.Fallback...)
+		}
+		policies[cl.ID] = dataplane.ClassPolicy{Pin: cl.Stickiness, PinTTL: cl.StickyTTL, Allowed: allowed}
+	}
+	var rules []dataplane.UserRule
+	for _, r := range cfg.Classify.Rules {
+		rules = append(rules, dataplane.UserRule{Name: r.Name, Class: r.Class, Devices: r.Devices, Match: r.Match})
+	}
+	spec.Classify = dataplane.CompileClassify(classes, policies, rules, cat.WithUser(cfg.Classify.Services))
+	return spec, nil
 }
 
 // logEvents пишет события в лог и историю, пока канал не закрыт отпиской.

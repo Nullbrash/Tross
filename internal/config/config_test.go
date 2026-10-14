@@ -340,3 +340,35 @@ func TestHTTPCheckDNSServers(t *testing.T) {
 		t.Fatalf("name in http_check.dns: err = %v", err)
 	}
 }
+
+func TestClassifySection(t *testing.T) {
+	y := minimal + `classes:
+  - { id: default }
+  - { id: bulk, links: [isp1] }
+classify:
+  rules:
+    - { name: pc-torrent, class: bulk, devices: [192.168.1.20], proto: tcp, ports: ["51413"] }
+  services:
+    - { id: steam, disabled: true }
+    - { id: myserver, parts: [{ id: mc, class: default, match: [{ proto: tcp, ports: ["25570"] }] }] }
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := cfg.Classify.Rules[0]; r.Class != model.ClassBulk || len(r.Devices) != 1 || r.Ports[0].From != 51413 {
+		t.Fatalf("rule = %+v", r)
+	}
+	bad := map[string]string{
+		"unknown class":         "classify: { rules: [{ name: x, class: gaming, ports: ['1'] }] }\n",
+		"whole protocol":        "classify: { rules: [{ name: x, class: default, proto: tcp }] }\n",
+		"ipv6 device":           "classify: { rules: [{ name: x, class: default, devices: ['::1'], ports: ['1'] }] }\n",
+		"duplicate name":        "classify: { rules: [{ name: x, class: default, ports: ['1'] }, { name: x, class: default, ports: ['2'] }] }\n",
+		"service unknown class": "classify: { services: [{ id: s, parts: [{ id: p, class: gaming, match: [{ ports: ['1'] }] }] }] }\n",
+	}
+	for name, extra := range bad {
+		if _, err := Parse([]byte(minimal + extra)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

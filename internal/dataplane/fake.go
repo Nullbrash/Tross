@@ -59,6 +59,13 @@ func (f *Fake) SetBalance(_ context.Context, shares []decision.LinkShare) error 
 	return nil
 }
 
+func (f *Fake) SetPlan(_ context.Context, plan []decision.ClassPlan) error {
+	for _, p := range plan {
+		f.record("set-plan", p.Class, p.Shares, p.PinLinks)
+	}
+	return nil
+}
+
 func (f *Fake) AddToSet(_ context.Context, set SetName, addr netip.Addr, ttl time.Duration) error {
 	f.record("add-to-set", set, addr, ttl)
 	return nil

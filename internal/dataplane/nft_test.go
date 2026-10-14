@@ -25,9 +25,11 @@ func TestRenderBase(t *testing.T) {
 		"add table inet tross\ndelete table inet tross\ntable inet tross {",
 		"set tross_dpi4 {", "set tross_proxy4 {", "flags timeout",
 		"type filter hook prerouting priority mangle;",
-		"ct mark and 0xff00 != 0 meta mark set ct mark and 0xff00 return",
-		`iifname "lan" ct state new jump choose`,
-		"chain choose {\n\t}",
+		"ct mark and 0xff00 != 0 meta mark set ct mark and 0xffff return",
+		`iifname "lan" ct state new jump classify`,
+		// Без классов — один default: всё в его цепочку, как прежний choose.
+		"chain classify {\n\t\tmeta mark set 0x1 goto cls1\n\t}",
+		"chain cls1 {\n\t}", "chain commit {\n\t\tct mark set meta mark\n\t}",
 		"type route hook output priority mangle;",
 		"meta mark and 0xff00 != 0 ct mark set meta mark and 0xff00",
 	} {
@@ -54,26 +56,38 @@ func TestRenderNAT(t *testing.T) {
 	}
 }
 
-func TestRenderChooseSingleAndEmpty(t *testing.T) {
+// defaultPlan — план одного класса default (как SetBalance).
+func defaultPlan(shares ...decision.LinkShare) []decision.ClassPlan {
+	return []decision.ClassPlan{{Class: model.ClassDefault, Shares: shares}}
+}
+
+func TestRenderPlanSingleAndEmpty(t *testing.T) {
 	spec := testSpec()
-	got := renderChoose(spec.Links, []decision.LinkShare{{Link: "isp2", Weight: 1}})
-	if !strings.Contains(got, "add rule inet tross choose meta mark set 0x200 ct mark set meta mark") {
-		t.Fatalf("single link:\n%s", got)
+	c := spec.Classify.withDefault()
+	got := renderPlan(c, spec.Links, defaultPlan(decision.LinkShare{Link: "isp2", Weight: 1}))
+	// Метка — канал (0x200) и класс default (0x1).
+	for _, want := range []string{"flush chain inet tross cls1\n", "add rule inet tross cls1 meta mark set 0x201\n", "add rule inet tross cls1 goto commit\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("single link lacks %q:\n%s", want, got)
+		}
 	}
+	// Ни одного канала: default разрешает все каналы — без метки, по
+	// основной таблице (fail-open), не reject.
 	for _, empty := range [][]decision.LinkShare{nil, {{Link: "isp1", Weight: 0}}, {{Link: "unknown", Weight: 5}}} {
-		got = renderChoose(spec.Links, empty)
-		if strings.Contains(got, "add rule") || !strings.HasPrefix(got, "flush chain inet tross choose") {
-			t.Fatalf("no usable link must leave choose empty (%v):\n%s", empty, got)
+		got = renderPlan(c, spec.Links, defaultPlan(empty...))
+		if strings.Contains(got, "add rule") || !strings.HasPrefix(got, "flush chain inet tross cls1") {
+			t.Fatalf("no usable link must leave cls1 empty (%v):\n%s", empty, got)
 		}
 	}
 }
 
-func TestRenderChooseWeighted(t *testing.T) {
+func TestRenderPlanWeighted(t *testing.T) {
 	spec := testSpec()
-	got := renderChoose(spec.Links, []decision.LinkShare{{Link: "isp1", Weight: 75}, {Link: "isp2", Weight: 25}, {Link: "lte", Weight: 1}})
-	want := "meta mark set jhash ip saddr . ip daddr mod 101 map { 0-74 : 0x100, 75-99 : 0x200, 100 : 0x300 } ct mark set meta mark"
+	got := renderPlan(spec.Classify.withDefault(), spec.Links, defaultPlan(
+		decision.LinkShare{Link: "isp1", Weight: 75}, decision.LinkShare{Link: "isp2", Weight: 25}, decision.LinkShare{Link: "lte", Weight: 1}))
+	want := "meta mark set jhash ip saddr . ip daddr mod 101 map { 0-74 : 0x101, 75-99 : 0x201, 100 : 0x301 }"
 	if !strings.Contains(got, want) {
-		t.Fatalf("weighted choose:\n%s\nwant %s", got, want)
+		t.Fatalf("weighted plan:\n%s\nwant %s", got, want)
 	}
 }
 

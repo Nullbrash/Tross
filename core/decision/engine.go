@@ -284,3 +284,56 @@ func method(p model.Policy, r *model.DomainRule) (model.Method, string, string) 
 	}
 	return r.Method, r.ProxyID, "domain rule (" + string(r.Layer) + ")"
 }
+
+// ClassPlan — что компилируется в ядро для класса: распределение новых
+// сессий (с гистерезисом движка) и каналы, закрепления за которыми
+// действуют (пригодные основные, а если таких нет — пригодные запасные).
+type ClassPlan struct {
+	Class    model.TrafficClass
+	Shares   []LinkShare
+	Pin      model.Stickiness
+	PinTTL   time.Duration
+	PinLinks []model.LinkID
+}
+
+// Plan — по классу на каждую политику, в порядке имён (стабильно для
+// сравнения «изменилось ли»).
+func (e *Engine) Plan() []ClassPlan {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	classes := make([]model.TrafficClass, 0, len(e.policies))
+	for c := range e.policies {
+		classes = append(classes, c)
+	}
+	slices.Sort(classes)
+	out := make([]ClassPlan, 0, len(classes))
+	for _, c := range classes {
+		pol := e.policies[c]
+		cp := ClassPlan{Class: c, Pin: pol.Stickiness, PinTTL: pol.StickyTTL}
+		shares := Balance(pol, e.links)
+		if len(shares) == 1 {
+			best := shares[0].Link
+			if prev, ok := e.best[c]; ok && prev != best && e.keepPrevLocked(pol, prev, best) {
+				best = prev
+			}
+			e.best[c] = best
+			shares = []LinkShare{{best, 1}}
+		}
+		cp.Shares = shares
+		pool := candidates(pol, e.links, false)
+		if len(pool) == 0 {
+			pool = candidates(pol, e.links, true)
+		}
+		for _, l := range pool {
+			cp.PinLinks = append(cp.PinLinks, l.Link.ID)
+		}
+		out = append(out, cp)
+	}
+	return out
+}
+
+// Equal — планы совпадают (не нужно перестраивать ядро).
+func (p ClassPlan) Equal(o ClassPlan) bool {
+	return p.Class == o.Class && p.Pin == o.Pin && p.PinTTL == o.PinTTL &&
+		slices.Equal(p.Shares, o.Shares) && slices.Equal(p.PinLinks, o.PinLinks)
+}

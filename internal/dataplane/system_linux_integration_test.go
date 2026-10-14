@@ -121,7 +121,7 @@ func TestSetupTeardownIdempotent(t *testing.T) {
 	if n := len(ownedRules(t)); n != 4 {
 		t.Fatalf("owned ip rules = %d, want 4 (suppress + 3 links) — Setup must not duplicate", n)
 	}
-	if out, err := run(t, "nft", "list", "table", "inet", "tross"); err != nil || !strings.Contains(out, "chain choose") {
+	if out, err := run(t, "nft", "list", "table", "inet", "tross"); err != nil || !strings.Contains(out, "chain classify") {
 		t.Fatalf("nft table missing: %v\n%s", err, out)
 	}
 	if out, err := run(t, "nft", "list", "table", "inet", "tross_nat"); err != nil || !strings.Contains(out, "masquerade") {
@@ -311,8 +311,8 @@ func TestWeightedSplitAcrossDestinations(t *testing.T) {
 	if err := s.SetBalance(ctx, []decision.LinkShare{{Link: "isp1", Weight: 1}, {Link: "isp2", Weight: 1}}); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := run(t, "nft", "list", "chain", "inet", "tross", "choose"); err != nil || !strings.Contains(out, "jhash") {
-		t.Fatalf("choose chain: %v\n%s", err, out)
+	if out, err := run(t, "nft", "list", "chain", "inet", "tross", "cls1"); err != nil || !strings.Contains(out, "jhash") {
+		t.Fatalf("default class chain: %v\n%s", err, out)
 	}
 	count := func() (int64, int64) { return rxBytes(t, "wan1"), rxBytes(t, "wan2") }
 	a1, a2 := count()

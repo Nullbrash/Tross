@@ -13,6 +13,7 @@ import (
 
 	"tross/core/lists"
 	"tross/core/model"
+	"tross/core/profile"
 )
 
 // Идентификаторы каналов и классов входят в имена объектов nftables и метрик —
@@ -42,6 +43,7 @@ func (c *Config) Validate() error {
 	c.validateLinks(&p)
 	c.validateMonitor(&p)
 	c.validateClasses(&p)
+	c.validateClassify(&p)
 	c.validateDNS(&p)
 	c.validateLists(&p)
 	c.validateDPI(&p)
@@ -279,6 +281,45 @@ func (c *Config) validateClasses(p *problems) {
 	}
 	if !seen[model.ClassDefault] {
 		p.add("classes", "class %q is required", model.ClassDefault)
+	}
+}
+
+func (c *Config) validateClassify(p *problems) {
+	names := map[string]bool{}
+	for i, r := range c.Classify.Rules {
+		f := fmt.Sprintf("classify.rules[%d]", i)
+		if r.Name == "" || names[r.Name] {
+			p.add(f+".name", "empty or duplicate name %q", r.Name)
+		}
+		names[r.Name] = true
+		if !c.classExists(r.Class) {
+			p.add(f+".class", "unknown class %q", r.Class)
+		}
+		if err := r.Match.Validate(); err != nil {
+			p.add(f, "%v", err)
+		}
+		for _, d := range r.Devices {
+			if !d.Is4() {
+				p.add(f+".devices", "%s: only IPv4 is supported", d)
+			}
+		}
+	}
+	builtin, err := profile.Builtin()
+	if err != nil {
+		p.add("classify.services", "builtin catalog: %v", err)
+		return
+	}
+	if err := builtin.WithUser(c.Classify.Services).Validate(); err != nil {
+		p.add("classify.services", "%v", err)
+	}
+	// Своим профилям — только настроенные классы; встроенный каталог может
+	// ссылаться на класс без политики — такие части идут по default.
+	for _, s := range c.Classify.Services {
+		for _, part := range s.Parts {
+			if !c.classExists(part.Class) {
+				p.add("classify.services", "%s/%s: unknown class %q", s.ID, part.ID, part.Class)
+			}
+		}
 	}
 }
 

@@ -14,21 +14,23 @@ import (
 
 	"tross/core/lists"
 	"tross/core/model"
+	"tross/core/profile"
 )
 
 type Config struct {
-	Daemon  Daemon  `yaml:"daemon"`
-	Log     Log     `yaml:"log"`
-	API     API     `yaml:"api"`
-	LAN     LAN     `yaml:"lan"`
-	Links   []Link  `yaml:"links"`
-	Monitor Monitor `yaml:"monitor"`
-	Classes []Class `yaml:"classes"`
-	DNS     DNS     `yaml:"dns"`
-	Lists   Lists   `yaml:"lists"`
-	DPI     DPI     `yaml:"dpi"`
-	Proxy   Proxy   `yaml:"proxy"`
-	Devices Devices `yaml:"devices"`
+	Daemon   Daemon   `yaml:"daemon"`
+	Log      Log      `yaml:"log"`
+	API      API      `yaml:"api"`
+	LAN      LAN      `yaml:"lan"`
+	Links    []Link   `yaml:"links"`
+	Monitor  Monitor  `yaml:"monitor"`
+	Classes  []Class  `yaml:"classes"`
+	Classify Classify `yaml:"classify"`
+	DNS      DNS      `yaml:"dns"`
+	Lists    Lists    `yaml:"lists"`
+	DPI      DPI      `yaml:"dpi"`
+	Proxy    Proxy    `yaml:"proxy"`
+	Devices  Devices  `yaml:"devices"`
 }
 
 type Daemon struct {
@@ -177,6 +179,22 @@ type Class struct {
 	ID           model.TrafficClass `yaml:"id"`
 	Name         string             `yaml:"name"`
 	model.Policy `yaml:",inline"`
+}
+
+// Classify — правила пользователя и свои профили сервисов поверх
+// встроенного каталога (core/profile).
+type Classify struct {
+	Rules    []ClassifyRule    `yaml:"rules"`
+	Services []profile.Service `yaml:"services"`
+}
+
+// ClassifyRule — правило пользователя: условие как в профилях и, по желанию,
+// адреса устройств (до реестра устройств — по IPv4 из LAN).
+type ClassifyRule struct {
+	Name          string             `yaml:"name"`
+	Class         model.TrafficClass `yaml:"class"`
+	Devices       []netip.Addr       `yaml:"devices"`
+	profile.Match `yaml:",inline"`
 }
 
 type DNS struct {

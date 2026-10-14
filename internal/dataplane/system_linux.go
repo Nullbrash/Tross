@@ -34,7 +34,7 @@ type System struct {
 	mu      sync.Mutex
 	spec    Spec
 	up      bool
-	shares  []decision.LinkShare  // текущее распределение новых соединений
+	plan    []decision.ClassPlan  // текущие распределения и закрепления классов
 	routed  map[model.LinkID]bool // маршрут по умолчанию в таблице канала поставлен
 	prevSVM string                // src_valid_mark до Setup — вернуть при Teardown
 }
@@ -98,9 +98,10 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 		}
 		s.routed[l.Link.ID] = true
 	}
-	// До первого решения балансировщика — первый канал по приоритету.
-	s.shares = firstByPriority(spec.Links, s.routed)
-	if err := runNft(ctx, renderNAT(spec)+renderBase(spec)+renderChoose(spec.Links, s.shares)); err != nil {
+	// До первого плана — каждому классу первый разрешённый канал по приоритету.
+	c := spec.Classify.withDefault()
+	s.plan = initialPlan(c, spec.Links, s.routed)
+	if err := runNft(ctx, renderNAT(spec)+renderBase(spec)+renderPlan(c, spec.Links, s.plan)); err != nil {
 		return fail(err)
 	}
 	s.up = true
@@ -318,37 +319,53 @@ func (s *System) cleanupLocked(ctx context.Context, purge bool) error {
 	return errors.Join(errs...)
 }
 
+// SetBalance — распределение для класса default (как до классов).
 func (s *System) SetBalance(ctx context.Context, shares []decision.LinkShare) error {
+	var pins []model.LinkID
+	for _, sh := range shares {
+		pins = append(pins, sh.Link)
+	}
+	return s.SetPlan(ctx, []decision.ClassPlan{{Class: model.ClassDefault, Shares: shares, PinLinks: pins}})
+}
+
+func (s *System) SetPlan(ctx context.Context, plan []decision.ClassPlan) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.up {
 		return errors.New("dataplane: not set up")
 	}
-	var ok []decision.LinkShare
-	for _, sh := range shares {
-		l, known := s.linkLocked(sh.Link)
-		if !known || sh.Weight <= 0 {
-			continue
-		}
-		// Маршрута могло не быть при Setup (кабель не был вставлен).
-		if !s.routed[sh.Link] {
-			if err := s.routeLocked(l); err != nil {
-				s.log.Warn("dataplane: link still has no route, left out of balance", "link", sh.Link, "err", err)
+	next := make([]decision.ClassPlan, 0, len(plan))
+	for _, p := range plan {
+		var ok []decision.LinkShare
+		for _, sh := range p.Shares {
+			l, known := s.linkLocked(sh.Link)
+			if !known || sh.Weight <= 0 {
 				continue
 			}
-			s.routed[sh.Link] = true
+			// Маршрута могло не быть при Setup (кабель не был вставлен).
+			if !s.routed[sh.Link] {
+				if err := s.routeLocked(l); err != nil {
+					s.log.Warn("dataplane: link still has no route, left out of plan", "link", sh.Link, "err", err)
+					continue
+				}
+				s.routed[sh.Link] = true
+			}
+			ok = append(ok, sh)
 		}
-		ok = append(ok, sh)
+		p.Shares = ok
+		next = append(next, p)
 	}
-	if slices.Equal(ok, s.shares) {
+	merged := mergePlan(s.plan, next)
+	if plansEqual(merged, s.plan) {
 		return nil
 	}
-	if err := runNft(ctx, renderChoose(s.spec.Links, ok)); err != nil {
+	if err := runNft(ctx, renderPlan(s.spec.Classify.withDefault(), s.spec.Links, merged)); err != nil {
 		return err
 	}
-	s.shares = ok
+	s.plan = merged
 	return nil
 }
+
 func (s *System) linkLocked(id model.LinkID) (LinkSpec, bool) {
 	for _, l := range s.spec.Links {
 		if l.Link.ID == id {
@@ -359,7 +376,10 @@ func (s *System) linkLocked(id model.LinkID) (LinkSpec, bool) {
 }
 
 func (s *System) AddToSet(ctx context.Context, set SetName, addr netip.Addr, ttl time.Duration) error {
-	if set != SetDPI && set != SetProxy {
+	s.mu.Lock()
+	known := set == SetDPI || set == SetProxy || slices.Contains(s.spec.Classify.domainSets(), set)
+	s.mu.Unlock()
+	if !known {
 		return fmt.Errorf("dataplane: unknown set %q", set)
 	}
 	if !addr.Is4() {

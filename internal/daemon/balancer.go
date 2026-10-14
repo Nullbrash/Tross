@@ -26,10 +26,19 @@ type balancer struct {
 	log    *slog.Logger
 	dp     dataplane.Dataplane
 	mon    linkmon.LinkMonitor
-	policy model.Policy
+	engine *decision.Engine
 
-	current []decision.LinkShare
+	current []decision.ClassPlan
 	usable  map[model.LinkID]bool
+}
+
+// newBalancer — распределения и закрепления по классам считает движок решений.
+func newBalancer(log *slog.Logger, dp dataplane.Dataplane, mon linkmon.LinkMonitor, policies map[model.TrafficClass]model.Policy) (*balancer, error) {
+	e, err := decision.NewEngine(policies, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &balancer{log: log, dp: dp, mon: mon, engine: e}, nil
 }
 
 func (b *balancer) run(ctx context.Context, events <-chan event.Event) {
@@ -67,15 +76,18 @@ func (b *balancer) apply(ctx context.Context) {
 	if !slices.ContainsFunc(status, func(s model.LinkStatus) bool { return s.Health.State != model.LinkStateUnknown }) {
 		return
 	}
-	shares := decision.Balance(b.policy, status)
-	if !slices.Equal(shares, b.current) {
+	b.engine.UpdateLinks(status)
+	plan := b.engine.Plan()
+	if !slices.EqualFunc(plan, b.current, decision.ClassPlan.Equal) {
 		// При ошибке current не меняется — следующий пересчёт повторит; сброс
 		// соединений упавшего канала ниже от неё не зависит.
-		if err := b.dp.SetBalance(ctx, shares); err != nil {
-			b.log.Error("balance apply failed", "err", err)
+		if err := b.dp.SetPlan(ctx, plan); err != nil {
+			b.log.Error("plan apply failed", "err", err)
 		} else {
-			b.log.Info("balance", "shares", shares)
-			b.current = shares
+			for _, p := range plan {
+				b.log.Info("plan", "class", p.Class, "shares", p.Shares, "pins", p.PinLinks)
+			}
+			b.current = plan
 		}
 	}
 

@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	"tross/core/decision"
@@ -31,19 +30,22 @@ const (
 // Пара «add table; delete table» делает загрузку идемпотентной: старая
 // таблица (например, после аварийного завершения) заменяется целиком.
 func renderBase(spec Spec) string {
+	c := spec.Classify.withDefault()
 	var b strings.Builder
 	fmt.Fprintf(&b, "add table inet %s\ndelete table inet %s\n", nftTable, nftTable)
 	fmt.Fprintf(&b, "table inet %s {\n", nftTable)
 	fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t}\n", SetDPI)
 	fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t}\n", SetProxy)
+	b.WriteString(renderClassifySets(c, spec.Links))
+	b.WriteString(renderClassifyChains(c))
 	b.WriteString("\tchain prerouting {\n\t\ttype filter hook prerouting priority mangle; policy accept;\n")
-	// Метка восстанавливается для всех пакетов соединения, включая ответы
-	// из канала: так rp_filter (src_valid_mark=1) находит обратный путь
-	// через таблицу канала, а соединение никогда не переезжает.
-	fmt.Fprintf(&b, "\t\tct mark and %#x != 0 meta mark set ct mark and %#x return\n", LinkMarkMask, LinkMarkMask)
-	fmt.Fprintf(&b, "\t\tiifname %s ct state new jump choose\n", quote(spec.LANInterface))
+	b.WriteString(renderBTGuard(c, spec.Links, spec.LANInterface))
+	// Метка (канал и класс) восстанавливается для всех пакетов соединения,
+	// включая ответы из канала: так rp_filter (src_valid_mark=1) находит
+	// обратный путь через таблицу канала, а соединение никогда не переезжает.
+	fmt.Fprintf(&b, "\t\tct mark and %#x != 0 meta mark set ct mark and %#x return\n", LinkMarkMask, LinkMarkMask|classMarkMask)
+	fmt.Fprintf(&b, "\t\tiifname %s ct state new jump classify\n", quote(spec.LANInterface))
 	b.WriteString("\t}\n")
-	b.WriteString("\tchain choose {\n\t}\n")
 	// Собственный трафик машины с меткой канала на сокете (пробы монитора,
 	// замер скорости, позже — DNS и прокси-ядро): метка сохраняется в
 	// соединении, иначе ответ придёт без неё и rp_filter его отбросит.
@@ -67,52 +69,6 @@ func renderNAT(spec Spec) string {
 		fmt.Fprintf(&b, "\t\toifname { %s } masquerade\n", strings.Join(wans, ", "))
 	}
 	b.WriteString("\t}\n}\n")
-	return b.String()
-}
-
-// renderChoose — выбор канала для нового соединения из домашней сети по
-// распределению. Ни одного канала — метка не ставится, и соединение идёт по
-// основной таблице (fail-open). Несколько — jhash от пары «устройство +
-// адрес назначения»: одно устройство к одному серверу всегда через один
-// канал (сайты не видят смены IP), разные серверы расходятся по весам.
-func renderChoose(links []LinkSpec, shares []decision.LinkShare) string {
-	marks := make(map[model.LinkID]uint32, len(links))
-	for _, l := range links {
-		marks[l.Link.ID] = l.FwMark
-	}
-	type part struct {
-		mark   uint32
-		weight int
-	}
-	var parts []part
-	total := 0
-	for _, s := range shares {
-		if m, ok := marks[s.Link]; ok && s.Weight > 0 {
-			parts = append(parts, part{m, s.Weight})
-			total += s.Weight
-		}
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "flush chain inet %s choose\n", nftTable)
-	switch len(parts) {
-	case 0:
-	case 1:
-		fmt.Fprintf(&b, "add rule inet %s choose meta mark set %#x ct mark set meta mark\n", nftTable, parts[0].mark)
-	default:
-		var elems []string
-		lo := 0
-		for _, p := range parts {
-			hi := lo + p.weight - 1
-			key := strconv.Itoa(lo)
-			if hi > lo {
-				key += "-" + strconv.Itoa(hi)
-			}
-			elems = append(elems, fmt.Sprintf("%s : %#x", key, p.mark))
-			lo = hi + 1
-		}
-		fmt.Fprintf(&b, "add rule inet %s choose meta mark set jhash ip saddr . ip daddr mod %d map { %s } ct mark set meta mark\n",
-			nftTable, total, strings.Join(elems, ", "))
-	}
 	return b.String()
 }
 

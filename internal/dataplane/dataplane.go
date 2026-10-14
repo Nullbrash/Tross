@@ -39,6 +39,8 @@ type LinkSpec struct {
 type Spec struct {
 	LANInterface string
 	Links        []LinkSpec
+	// Classify — классы и правила классификации; пусто — один класс default.
+	Classify Classify
 }
 
 // Dataplane — всё, что демон меняет в сетевом стеке ядра.
@@ -52,6 +54,9 @@ type Dataplane interface {
 	// каналам (вес > 0); пусто — ни одного пригодного канала. Установленные
 	// соединения не переезжают.
 	SetBalance(ctx context.Context, shares []decision.LinkShare) error
+	// SetPlan задаёт распределение и закрепления по классам (Engine.Plan);
+	// классы, которых нет в плане, сохраняют прежнее.
+	SetPlan(ctx context.Context, plan []decision.ClassPlan) error
 	// AddToSet кладёт адрес в множество с таймаутом (обычно — по TTL DNS-ответа).
 	AddToSet(ctx context.Context, set SetName, addr netip.Addr, ttl time.Duration) error
 	// FlushConntrack сбрасывает соединения, закреплённые за упавшим каналом.

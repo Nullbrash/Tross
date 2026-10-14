@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -303,5 +304,41 @@ func TestBroadcastPicksBestUploadPerPlatform(t *testing.T) {
 	}
 	if l := b.link(pc, "8.8.8.8:443", "a.rtmp.youtube.com", live); l != "isp2" {
 		t.Errorf("youtube reconnect moved to %s", l)
+	}
+}
+
+func TestPlanFollowsLinksWithHysteresis(t *testing.T) {
+	b := newBench(t)
+	plan := func(c model.TrafficClass) ClassPlan {
+		for _, p := range b.e.Plan() {
+			if p.Class == c {
+				return p
+			}
+		}
+		t.Fatalf("no plan for %s", c)
+		return ClassPlan{}
+	}
+	g := plan(model.ClassGaming)
+	if len(g.Shares) != 1 || g.Shares[0].Link != "isp1" || g.Pin != model.StickSession || !slices.Equal(g.PinLinks, []model.LinkID{"isp1", "isp2"}) {
+		t.Fatalf("gaming plan = %+v", g)
+	}
+	// Небольшое улучшение isp2 — план не меняется (то же правило, что у Decide).
+	b.set("isp2", model.LinkStateUp, 9*time.Millisecond)
+	if g2 := plan(model.ClassGaming); !g2.Equal(g) {
+		t.Errorf("plan changed on a minor RTT gain: %+v", g2)
+	}
+	// Оба проводных упали: закрепления действуют только на LTE; у bulk — ничего.
+	b.set("isp1", model.LinkStateDown, 0)
+	b.set("isp2", model.LinkStateDown, 0)
+	if g3 := plan(model.ClassGaming); !slices.Equal(g3.PinLinks, []model.LinkID{"lte"}) || g3.Shares[0].Link != "lte" {
+		t.Errorf("gaming plan with wired down = %+v", g3)
+	}
+	if bl := plan(model.ClassBulk); len(bl.Shares) != 0 || len(bl.PinLinks) != 0 {
+		t.Errorf("bulk plan with wired down = %+v, want nothing (never LTE)", bl)
+	}
+	// Вернулся проводной — закрепления на LTE больше не действуют.
+	b.set("isp2", model.LinkStateUp, 0)
+	if g4 := plan(model.ClassGaming); slices.Contains(g4.PinLinks, "lte") {
+		t.Errorf("lte pins still honored after isp2 back: %+v", g4)
 	}
 }
