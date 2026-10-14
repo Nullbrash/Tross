@@ -6,6 +6,7 @@ package linkhealth
 import (
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"tross/core/model"
@@ -19,9 +20,10 @@ type Params struct {
 	DegradeAfter int // раундов с плохими метриками до degraded
 
 	DegradedLoss   float64       // доля потерь в окне
-	DegradedJitter time.Duration // средний джиттер в окне
-	// Задержка «раздута» (bufferbloat), если средняя ≥ RTTRatio × минимальной
-	// в окне и разница ≥ RTTDelta: одно отношение срабатывает на 1→3 мс.
+	DegradedJitter time.Duration // медиана по целям их среднего джиттера в окне
+	// Задержка цели «раздута» (bufferbloat), если её средняя ≥ RTTRatio × её
+	// минимальной в окне и разница ≥ RTTDelta: одно отношение срабатывает на
+	// 1→3 мс. Канал раздут, если раздута хотя бы половина целей.
 	RTTRatio float64
 	RTTDelta time.Duration
 
@@ -41,20 +43,32 @@ func DefaultParams() Params {
 // Round — итог одного раунда проб канала.
 type Round struct {
 	At   time.Time
-	Sent int             // проб к общим целям
-	Recv int             // ответов от общих целей (включая запасную TCP-пробу)
-	RTTs []time.Duration // задержки ответов общих целей
+	Sent int      // проб к общим целям
+	Recv int      // ответов от общих целей (включая TCP-пробу)
+	RTTs []Sample // задержки ответов общих целей
 	// Цели, доступные даже в режиме «белых списков» оператора.
 	WLSent, WLRecv int
+}
+
+// Sample — задержка ответа одной цели. Цель нужна, чтобы джиттер и
+// «раздутость» считались по каждой отдельно: цели на разном расстоянии дают
+// разные задержки, и вперемешку этот разброс выглядел бы нестабильностью.
+type Sample struct {
+	Target string
+	RTT    time.Duration
 }
 
 func (r Round) alive() bool      { return r.Recv > 0 }
 func (r Round) restricted() bool { return r.Recv == 0 && r.WLSent > 0 && r.WLRecv > 0 }
 
-// Metrics — метрики окна.
+// Metrics — метрики окна. RTT и MinRTT — по всем ответам (для показа);
+// Jitter — медиана джиттера целей; Bloated — задержка раздута хотя бы у
+// половины целей (каждая — относительно своего минимума).
 type Metrics struct {
 	RTT, MinRTT, Jitter time.Duration
 	Loss                float64
+	Bloated             bool
+	BloatDetail         string // для причины degraded: сколько целей и худшая
 }
 
 // Tracker — состояние одного канала. Не потокобезопасен: вызывающий
@@ -179,45 +193,93 @@ func (t *Tracker) degradedReason(m Metrics) string {
 		return fmt.Sprintf("loss %.1f%%", m.Loss*100)
 	case m.Jitter >= t.p.DegradedJitter:
 		return fmt.Sprintf("jitter %v", m.Jitter.Round(time.Millisecond))
-	case m.MinRTT > 0 && float64(m.RTT) >= t.p.RTTRatio*float64(m.MinRTT) && m.RTT-m.MinRTT >= t.p.RTTDelta:
-		return fmt.Sprintf("rtt %v vs min %v", m.RTT.Round(time.Millisecond), m.MinRTT.Round(time.Millisecond))
+	case m.Bloated:
+		return "rtt " + m.BloatDetail
 	}
 	return ""
 }
 
+// bloatMinSamples — меньше ответов цели в окне — по ней «раздутость» не
+// судим: среднее из пары значений слишком шумное.
+const bloatMinSamples = 3
+
 func (t *Tracker) metrics() Metrics {
-	var sent, recv int
+	var m Metrics
+	var sent, recv, n int
 	var sum time.Duration
-	var n int
-	minRTT := time.Duration(math.MaxInt64)
-	var jitterSum time.Duration
-	var jn int
-	var prevRTT time.Duration
+	m.MinRTT = time.Duration(math.MaxInt64)
+	perTarget := map[string][]time.Duration{}
+	var targets []string
 	for _, r := range t.window {
 		sent += r.Sent
 		recv += min(r.Recv, r.Sent)
-		for _, d := range r.RTTs {
-			sum += d
+		for _, s := range r.RTTs {
+			sum += s.RTT
 			n++
-			minRTT = min(minRTT, d)
-			if prevRTT > 0 {
-				diff := d - prevRTT
-				jitterSum += max(diff, -diff)
-				jn++
+			m.MinRTT = min(m.MinRTT, s.RTT)
+			if _, ok := perTarget[s.Target]; !ok {
+				targets = append(targets, s.Target)
 			}
-			prevRTT = d
+			perTarget[s.Target] = append(perTarget[s.Target], s.RTT)
 		}
 	}
-	var m Metrics
 	if sent > 0 {
 		m.Loss = 1 - float64(recv)/float64(sent)
 	}
-	if n > 0 {
-		m.RTT = sum / time.Duration(n)
-		m.MinRTT = minRTT
+	if n == 0 {
+		m.MinRTT = 0
+		return m
 	}
-	if jn > 0 {
-		m.Jitter = jitterSum / time.Duration(jn)
+	m.RTT = sum / time.Duration(n)
+
+	var jitters []time.Duration
+	considered, bloated := 0, 0
+	worst, worstAvg, worstMin := "", time.Duration(0), time.Duration(0)
+	for _, tg := range targets {
+		rtts := perTarget[tg]
+		if len(rtts) >= 2 {
+			var js time.Duration
+			for k := 1; k < len(rtts); k++ {
+				d := rtts[k] - rtts[k-1]
+				js += max(d, -d)
+			}
+			jitters = append(jitters, js/time.Duration(len(rtts)-1))
+		}
+		if len(rtts) < bloatMinSamples {
+			continue
+		}
+		considered++
+		lo, total := rtts[0], time.Duration(0)
+		for _, d := range rtts {
+			lo = min(lo, d)
+			total += d
+		}
+		avg := total / time.Duration(len(rtts))
+		if float64(avg) >= t.p.RTTRatio*float64(lo) && avg-lo >= t.p.RTTDelta {
+			bloated++
+			if avg-lo > worstAvg-worstMin {
+				worst, worstAvg, worstMin = tg, avg, lo
+			}
+		}
+	}
+	m.Jitter = median(jitters)
+	if considered > 0 && bloated*2 >= considered {
+		m.Bloated = true
+		m.BloatDetail = fmt.Sprintf("bloated on %d/%d targets (%s %v vs min %v)", bloated, considered,
+			worst, worstAvg.Round(time.Millisecond), worstMin.Round(time.Millisecond))
 	}
 	return m
+}
+
+// median — медиана (для чётного числа — среднее двух средних); пусто — 0.
+func median(v []time.Duration) time.Duration {
+	if len(v) == 0 {
+		return 0
+	}
+	s := slices.Clone(v)
+	slices.Sort(s)
+	if len(s)%2 == 1 {
+		return s[len(s)/2]
+	}
+	return (s[len(s)/2-1] + s[len(s)/2]) / 2
 }

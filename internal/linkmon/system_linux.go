@@ -148,6 +148,7 @@ func (s *System) round(ctx context.Context, l *link) {
 	}
 	if l.pinger != nil {
 		type res struct {
+			dst netip.Addr
 			rtt time.Duration
 			ok  bool
 			wl  bool
@@ -156,7 +157,7 @@ func (s *System) round(ctx context.Context, l *link) {
 		ch := make(chan res, all)
 		send := func(dst netip.Addr, wl bool) {
 			rtt, ok := l.pinger.ping(ctx, dst, s.opts.Timeout)
-			ch <- res{rtt, ok, wl}
+			ch <- res{dst, rtt, ok, wl}
 		}
 		for _, a := range l.probe.Targets {
 			go send(a, false)
@@ -171,13 +172,14 @@ func (s *System) round(ctx context.Context, l *link) {
 				r.WLRecv++
 			case x.ok:
 				r.Recv++
-				r.RTTs = append(r.RTTs, x.rtt)
+				r.RTTs = append(r.RTTs, linkhealth.Sample{Target: x.dst.String(), RTT: x.rtt})
 			}
 		}
 	}
 	// TCP-проба каждый раунд (цели по кругу): ICMP может проходить, когда TCP
 	// режется, и наоборот. Шла параллельно с ICMP — ждём её здесь.
 	var tcp tcpRes
+	tcpSample := func() linkhealth.Sample { return linkhealth.Sample{Target: "tcp " + target.String(), RTT: tcp.rtt} }
 	switch {
 	case regular:
 		tcp = <-tcpDone
@@ -191,12 +193,12 @@ func (s *System) round(ctx context.Context, l *link) {
 		r.Sent++
 		if tcp.ok {
 			r.Recv++
-			r.RTTs = append(r.RTTs, tcp.rtt)
+			r.RTTs = append(r.RTTs, tcpSample())
 		}
 	case tcp.ok:
 		// ICMP режется по пути — раунд засчитывается одной TCP-пробой, иначе
 		// потери 75 % держали бы канал в degraded.
-		r.Sent, r.Recv, r.RTTs = 1, 1, []time.Duration{tcp.rtt}
+		r.Sent, r.Recv, r.RTTs = 1, 1, []linkhealth.Sample{tcpSample()}
 	}
 
 	l.mu.Lock()

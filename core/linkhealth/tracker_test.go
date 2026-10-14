@@ -21,10 +21,10 @@ func feed(tr *Tracker, codes string) []model.LinkState {
 	for _, c := range codes {
 		r := Round{At: t0.Add(time.Duration(rounds[tr]) * 2 * time.Second), Sent: 3, WLSent: 1}
 		rounds[tr]++
-		ms := func(v ...int) []time.Duration {
-			var d []time.Duration
-			for _, x := range v {
-				d = append(d, time.Duration(x)*time.Millisecond)
+		ms := func(v ...int) []Sample {
+			var d []Sample
+			for i, x := range v {
+				d = append(d, Sample{Target: string(rune('a' + i)), RTT: time.Duration(x) * time.Millisecond})
 			}
 			return d
 		}
@@ -225,12 +225,71 @@ func TestHTTPVerdictResetAfterOutage(t *testing.T) {
 
 func TestMetrics(t *testing.T) {
 	tr := NewTracker(DefaultParams())
-	tr.Observe(Round{At: t0, Sent: 2, Recv: 2, RTTs: []time.Duration{10 * time.Millisecond, 20 * time.Millisecond}})
-	m, _ := tr.Observe(Round{At: t0.Add(2 * time.Second), Sent: 2, Recv: 1, RTTs: []time.Duration{30 * time.Millisecond}})
-	if m.RTT != 20*time.Millisecond || m.MinRTT != 10*time.Millisecond || m.Jitter != 10*time.Millisecond {
+	tr.Observe(Round{At: t0, Sent: 2, Recv: 2, RTTs: []Sample{{"a", 10 * time.Millisecond}, {"b", 20 * time.Millisecond}}})
+	m, _ := tr.Observe(Round{At: t0.Add(2 * time.Second), Sent: 2, Recv: 1, RTTs: []Sample{{"a", 30 * time.Millisecond}}})
+	// Джиттер — только по цели a (10 → 30); у b один ответ, разница a−b не в счёт.
+	if m.RTT != 20*time.Millisecond || m.MinRTT != 10*time.Millisecond || m.Jitter != 20*time.Millisecond {
 		t.Fatalf("metrics = %+v", m)
 	}
 	if m.Loss != 0.25 {
 		t.Fatalf("loss = %v, want 0.25", m.Loss)
+	}
+}
+
+// samples строит раунд с полным ответом: задержки целей a, b, c… в мс.
+func samples(v ...float64) []Sample {
+	var d []Sample
+	for i, x := range v {
+		d = append(d, Sample{Target: string(rune('a' + i)), RTT: time.Duration(x * float64(time.Millisecond))})
+	}
+	return d
+}
+
+// Цели на разном расстоянии и с разной (но своей стабильной) задержкой — не
+// джиттер и не «раздутость»; скачущая задержка одной и той же цели — да.
+func TestPerTargetJitterAndBloat(t *testing.T) {
+	// step — 4 раунда с задержками before, затем 6 с after: устойчивый рост
+	// задержки (bufferbloat), почти не дающий джиттера.
+	step := func(before, after []float64) [][]float64 {
+		var r [][]float64
+		for i := range 10 {
+			r = append(r, before)
+			if i >= 4 {
+				r[i] = after
+			}
+		}
+		return r
+	}
+	cases := []struct {
+		name    string
+		rounds  [][]float64 // задержки целей a, b, c по раундам
+		jitter  time.Duration
+		bloated bool
+		state   model.LinkState
+	}{
+		{"near and far stable", [][]float64{{10, 60}, {10, 60}, {11, 61}, {10, 60}}, 2 * time.Millisecond / 3, false, model.LinkStateUp},
+		// Медиана по целям a (80) и b (0); a заодно раздута — это половина целей.
+		{"jumping target", [][]float64{{10, 10}, {90, 10}, {10, 10}, {90, 10}, {10, 10}}, 40 * time.Millisecond, true, model.LinkStateDegraded},
+		{"one of three bloated", step([]float64{10, 20, 30}, []float64{10, 20, 300}), 0, false, model.LinkStateUp},
+		// Джиттер a — 10, b — 20, c — 0: деградирует именно по «раздутости».
+		{"two of three bloated", step([]float64{10, 20, 30}, []float64{100, 200, 30}), 10 * time.Millisecond, true, model.LinkStateDegraded},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tr := NewTracker(DefaultParams())
+			var m Metrics
+			for i, r := range c.rounds {
+				m, _ = tr.Observe(Round{At: t0.Add(time.Duration(i) * 2 * time.Second), Sent: len(r), Recv: len(r), RTTs: samples(r...)})
+			}
+			if m.Jitter != c.jitter {
+				t.Errorf("jitter = %v, want %v", m.Jitter, c.jitter)
+			}
+			if m.Bloated != c.bloated {
+				t.Errorf("bloated = %v (%s), want %v", m.Bloated, m.BloatDetail, c.bloated)
+			}
+			if s, _, reason := tr.State(); s != c.state {
+				t.Errorf("state = %v (%s), want %v", s, reason, c.state)
+			}
+		})
 	}
 }
