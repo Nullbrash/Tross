@@ -220,11 +220,20 @@ func newMonitor(cfg *config.Config, log *slog.Logger, bus event.EventBus) (linkm
 	}, probes)
 }
 
+var dnsProto = map[config.DNSProto]linkmon.DNSProto{
+	config.DNSPlain:     linkmon.DNSPlain,
+	config.DNSOverTLS:   linkmon.DNSOverTLS,
+	config.DNSOverHTTPS: linkmon.DNSOverHTTPS,
+}
+
 func httpCheckOptions(h config.HTTPCheck) linkmon.HTTPCheckOptions {
 	if !*h.Enabled {
 		return linkmon.HTTPCheckOptions{}
 	}
-	o := linkmon.HTTPCheckOptions{Interval: h.Interval, Timeout: h.Timeout, DNS: h.DNS}
+	o := linkmon.HTTPCheckOptions{Interval: h.Interval, Timeout: h.Timeout}
+	for _, d := range h.DNS {
+		o.DNS = append(o.DNS, linkmon.DNSServer{Proto: dnsProto[d.Proto], Addr: d.Addr, URL: d.URL})
+	}
 	for _, u := range h.URLs {
 		o.URLs = append(o.URLs, linkmon.HTTPCheckURL{URL: u.URL, Status: u.Status, Body: u.Body, Domestic: u.Domestic})
 	}

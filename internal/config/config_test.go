@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -285,5 +286,57 @@ func TestApplyFlags(t *testing.T) {
 	cfg.ApplyFlags(false, "")
 	if cfg.Daemon.DryRun || cfg.Daemon.DataDir != "/var/lib/tross" {
 		t.Errorf("real mode keeps data_dir: %+v", cfg.Daemon)
+	}
+}
+
+func TestHTTPCheckDNSServers(t *testing.T) {
+	cfg, err := Parse([]byte(minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// По умолчанию — DoH: открытый DNS на 53 к сторонним серверам бывает закрыт.
+	for _, d := range cfg.Monitor.HTTPCheck.DNS {
+		if d.Proto != DNSOverHTTPS || d.Addr.Port() != 443 || d.URL == "" {
+			t.Errorf("default http_check.dns %q = %+v, want DoH", d, d)
+		}
+	}
+
+	good := map[string]DNSServer{
+		"1.1.1.1":                        {Proto: DNSPlain, Addr: netip.MustParseAddrPort("1.1.1.1:53")},
+		"udp://9.9.9.9:5353":             {Proto: DNSPlain, Addr: netip.MustParseAddrPort("9.9.9.9:5353")},
+		"tls://1.1.1.1":                  {Proto: DNSOverTLS, Addr: netip.MustParseAddrPort("1.1.1.1:853")},
+		"https://8.8.4.4/dns-query":      {Proto: DNSOverHTTPS, Addr: netip.MustParseAddrPort("8.8.4.4:443"), URL: "https://8.8.4.4/dns-query"},
+		"https://9.9.9.9:8443/dns-query": {Proto: DNSOverHTTPS, Addr: netip.MustParseAddrPort("9.9.9.9:8443"), URL: "https://9.9.9.9:8443/dns-query"},
+	}
+	for s, want := range good {
+		got, err := ParseDNSServer(s)
+		if err != nil || got.Proto != want.Proto || got.Addr != want.Addr || got.URL != want.URL {
+			t.Errorf("ParseDNSServer(%q) = %+v, %v; want %+v", s, got, err, want)
+		}
+	}
+	for _, s := range []string{
+		"dns.google",                    // имя: проверке нельзя зависеть от DNS
+		"https://dns.google/dns-query",  // то же
+		"https://1.1.1.1",               // DoH без пути
+		"tls://1.1.1.1/dns-query",       // путь только у https
+		"2606:4700:4700::1111",          // IPv6 не поддерживается
+		"quic://1.1.1.1",                // неизвестный способ
+		"https://u:p@1.1.1.1/dns-query", // учётные данные в адресе
+	} {
+		if _, err := ParseDNSServer(s); err == nil {
+			t.Errorf("ParseDNSServer(%q) accepted", s)
+		}
+	}
+
+	y := minimal + "monitor: { http_check: { dns: [1.1.1.1, 'tls://8.8.4.4', 'https://9.9.9.9/dns-query'] } }\n"
+	cfg, err = Parse([]byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := cfg.Monitor.HTTPCheck.DNS; len(d) != 3 || d[0].Proto != DNSPlain || d[1].Proto != DNSOverTLS || d[2].Proto != DNSOverHTTPS {
+		t.Fatalf("parsed http_check.dns = %+v", d)
+	}
+	if _, err := Parse([]byte(minimal + "monitor: { http_check: { dns: [dns.google] } }\n")); err == nil || !strings.Contains(err.Error(), "not a name") {
+		t.Fatalf("name in http_check.dns: err = %v", err)
 	}
 }

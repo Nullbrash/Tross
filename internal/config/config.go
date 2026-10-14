@@ -118,7 +118,7 @@ type HTTPCheck struct {
 	Interval  time.Duration  `yaml:"interval"`
 	Timeout   time.Duration  `yaml:"timeout"`
 	FailAfter int            `yaml:"fail_after"`
-	DNS       []netip.Addr   `yaml:"dns"` // резолверы, к которым идут запросы через канал
+	DNS       []DNSServer    `yaml:"dns"` // резолверы, к которым идут запросы через канал
 	URLs      []HTTPCheckURL `yaml:"urls"`
 }
 

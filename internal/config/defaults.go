@@ -99,7 +99,10 @@ func (c *Config) applyDefaults() {
 	orDefault(&h.Timeout, 5*time.Second)
 	orDefault(&h.FailAfter, 2)
 	if len(h.DNS) == 0 {
-		h.DNS = addrs("1.1.1.1", "8.8.4.4", "9.9.9.9")
+		// DoH: открытый DNS на порт 53 к сторонним серверам у части
+		// провайдеров закрыт — проверка не получила бы адресов и пометила бы
+		// исправный канал restricted.
+		h.DNS = dnsServers("https://1.1.1.1/dns-query", "https://8.8.4.4/dns-query", "https://9.9.9.9/dns-query")
 	}
 	if len(h.URLs) == 0 {
 		h.URLs = []HTTPCheckURL{

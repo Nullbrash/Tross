@@ -84,7 +84,11 @@ monitor:
     interval: 30s
     timeout: 5s
     fail_after: 2
-    dns: [1.1.1.1, 8.8.4.4, 9.9.9.9]
+    # Резолверы проверки — только по IP: «https://IP/путь» — DoH, «tls://IP» —
+    # DoT, просто IP — обычный DNS на порт 53. По умолчанию DoH: у части
+    # провайдеров открытый DNS к сторонним серверам закрыт, и проверка без
+    # адресов сочла бы исправный канал ограниченным.
+    dns: ["https://1.1.1.1/dns-query", "https://8.8.4.4/dns-query", "https://9.9.9.9/dns-query"]
     urls:
       - { url: "http://cp.cloudflare.com/generate_204", status: 204 }
       - { url: "https://www.gstatic.com/generate_204", status: 204 }

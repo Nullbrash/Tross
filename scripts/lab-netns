@@ -124,7 +124,10 @@ netem() {
 
 start_servers() {
 	[ -x "$BIN/labsrv" ] || die "no $BIN/labsrv (build: go build -o bin/ ./cmd/...)"
+	# DoH/DoT — на адресе DNS стенда (dnsmasq занимает только 53); корень
+	# сертификата читают тесты монитора (labDoHCA).
 	nsx tl-inet setsid "$BIN/labsrv" serve -http "$SRV_IP:80" -udp "$SRV_IP:9000" -portal "$SRV_IP:8080" \
+		-doh "$DNS_IP:443" -dot "$DNS_IP:853" -dns-ca "$STATE/doh-ca.pem" -dns-answer "$SRV_IP" \
 		> "$STATE/labsrv.log" 2>&1 < /dev/null &
 	echo $! > "$STATE/labsrv.pid"
 	# «Пиры» на всех адресах (в том числе 203.0.113.64/26) — отдельные порты:
@@ -292,6 +295,8 @@ cmd_selftest() {
 		check "ping probes" nsx tl-client ping -c3 -W2 -i0.2 "${PROBE_IPS[0]}"
 		check "http" nsx tl-client wget -q -T5 --tries=1 -O- "http://$SRV_IP/"
 		check "dns" sh -c "ip netns exec tl-client dig +short +time=2 +tries=1 @$DNS_IP example.org | grep -qx $SRV_IP"
+		check "doh" sh -c "ip netns exec tl-client dig +https +tls-ca=$STATE/doh-ca.pem +short +time=2 +tries=1 @$DNS_IP example.org | grep -qx $SRV_IP"
+		check "dot" sh -c "ip netns exec tl-client dig +tls +tls-ca=$STATE/doh-ca.pem +short +time=2 +tries=1 @$DNS_IP example.org | grep -qx $SRV_IP"
 		r1=$(rx_bytes "$w")
 		check "traffic went through $w" test "$r1" -gt "$r0"
 		echo "  rtt: $(nsx tl-client ping -c5 -i0.2 -W2 "${PROBE_IPS[0]}" | tail -1)"

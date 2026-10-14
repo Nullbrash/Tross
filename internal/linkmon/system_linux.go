@@ -313,16 +313,12 @@ func checkURL(ctx context.Context, c *http.Client, u HTTPCheckURL) error {
 // перенаправления не выполняются (страница авторизации отвечает именно ими).
 func (s *System) linkHTTPClient(l *link, timeout time.Duration) *http.Client {
 	ctl := sockopts(l.probe.Link.Interface, l.probe.Mark)
-	servers := s.opts.HTTPCheck.DNS
-	var next atomic.Uint32
-	resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-		srv := servers[int(next.Add(1))%len(servers)]
+	linkDial := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		d := net.Dialer{Timeout: timeout, Control: ctl}
-		if strings.HasPrefix(network, "tcp") {
-			return d.DialContext(ctx, "tcp4", netip.AddrPortFrom(srv, 53).String())
-		}
-		return d.DialContext(ctx, "udp4", netip.AddrPortFrom(srv, 53).String())
-	}}
+		return d.DialContext(ctx, network, addr)
+	}
+	h := s.opts.HTTPCheck
+	resolver := &net.Resolver{PreferGo: true, Dial: resolverDial(h.DNS, linkDial, h.RootCAs, timeout)}
 	dialer := &net.Dialer{Timeout: timeout, Control: ctl, Resolver: resolver}
 	return &http.Client{
 		Timeout:       timeout,

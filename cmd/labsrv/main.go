@@ -1,8 +1,9 @@
 // Команда labsrv — тестовые серверы «интернета» стенда и клиент UDP-пинга.
 //
-//	labsrv serve -http :80 -udp :9000 [-portal :8080]
+//	labsrv serve -http :80 -udp :9000 [-portal :8080] [-doh IP:443 -dot IP:853 -dns-ca ca.pem -dns-answer IP]
 //	    HTTP (/, /generate_204, /success.txt, /bytes?n=, /sink), UDP-эхо,
-//	    имитация страницы авторизации (captive portal) на отдельном порту
+//	    имитация страницы авторизации (captive portal) на отдельном порту,
+//	    DoH и DoT с самоподписанным сертификатом на IP (корень — в -dns-ca)
 //	labsrv udpping -target 203.0.113.10:9000 -rate 30 -n 90
 //	labsrv upload -url http://203.0.113.10/sink -n 50000000
 //	labsrv load -url http://203.0.113.10 -down 150 -up 50 -chunk 1000000 -churn -duration 60s
@@ -21,6 +22,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -60,7 +62,21 @@ func serve(args []string) error {
 	httpAddr := fs.String("http", ":80", "HTTP listen address")
 	udpAddr := fs.String("udp", ":9000", "UDP echo listen address")
 	portalAddr := fs.String("portal", "", "captive-portal imitation listen address (any path → 200 HTML)")
+	dohAddr := fs.String("doh", "", "DoH listen IP:port (needs -dot, -dns-ca, -dns-answer)")
+	dotAddr := fs.String("dot", "", "DoT listen IP:port")
+	dnsCA := fs.String("dns-ca", "", "where to write the self-signed DoH/DoT certificate (client root)")
+	dnsAns := fs.String("dns-answer", "", "IPv4 answer for any A query")
 	_ = fs.Parse(args)
+
+	if *dohAddr != "" {
+		ans, err := netip.ParseAddr(*dnsAns)
+		if err != nil || *dotAddr == "" || *dnsCA == "" {
+			return errors.New("-doh needs -dot, -dns-ca and -dns-answer IPv4")
+		}
+		if err := serveEncryptedDNS(*dohAddr, *dotAddr, *dnsCA, ans); err != nil {
+			return err
+		}
+	}
 
 	if *portalAddr != "" {
 		portal := &http.Server{Addr: *portalAddr, ReadHeaderTimeout: 10 * time.Second,

@@ -1,6 +1,7 @@
 package linkmon
 
 import (
+	"crypto/x509"
 	"log/slog"
 	"net/netip"
 	"time"
@@ -34,8 +35,9 @@ type HTTPCheckURL struct {
 type HTTPCheckOptions struct {
 	Interval time.Duration
 	Timeout  time.Duration
-	DNS      []netip.Addr
+	DNS      []DNSServer
 	URLs     []HTTPCheckURL
+	RootCAs  *x509.CertPool // корни для DoT/DoH; nil — системные (свои — для стенда)
 }
 
 type SpeedTestOptions struct {

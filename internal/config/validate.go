@@ -211,11 +211,6 @@ func (c *Config) validateMonitor(p *problems) {
 		if h.Interval < m.Interval || h.Timeout <= 0 || h.FailAfter < 1 {
 			p.add("monitor.http_check", "need interval >= monitor.interval, timeout > 0, fail_after >= 1")
 		}
-		for _, a := range h.DNS {
-			if !a.Is4() {
-				p.add("monitor.http_check.dns", "%s: only IPv4 is supported", a)
-			}
-		}
 		foreign := 0
 		for i, u := range h.URLs {
 			f := fmt.Sprintf("monitor.http_check.urls[%d]", i)

@@ -7,6 +7,7 @@ package linkmon
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"io"
 	"log/slog"
@@ -25,10 +26,14 @@ import (
 )
 
 var (
-	t1  = netip.MustParseAddr("203.0.113.1")
-	t2  = netip.MustParseAddr("203.0.113.2")
-	t3  = netip.MustParseAddr("203.0.113.3") // «белый список» для lte
-	lab = os.Getenv("LAB_NETNS")
+	t1 = netip.MustParseAddr("203.0.113.1")
+	t2 = netip.MustParseAddr("203.0.113.2")
+	t3 = netip.MustParseAddr("203.0.113.3") // «белый список» для lte
+	// labDNS — DNS стенда: dnsmasq на 53, labsrv — DoT на 853 и DoH на 443
+	// с сертификатом, корень которого lab-netns кладёт в labDoHCA.
+	labDNS   = netip.MustParseAddr("203.0.113.53")
+	labDoHCA = "/run/tross-lab/doh-ca.pem"
+	lab      = os.Getenv("LAB_NETNS")
 )
 
 func benchLinks() []dataplane.LinkSpec {
@@ -55,7 +60,10 @@ type bench struct {
 }
 
 // start поднимает dataplane (таблицы каналов — по ним идут пробы) и монитор.
-func start(t *testing.T) *bench {
+func start(t *testing.T) *bench { t.Helper(); return startWith(t, nil) }
+
+// startWith — то же с правкой настроек монитора до запуска.
+func startWith(t *testing.T, tweak func(*Options)) *bench {
 	t.Helper()
 	if lab == "" {
 		t.Fatal("LAB_NETNS is not set (run via scripts/lab-itest)")
@@ -80,19 +88,23 @@ func start(t *testing.T) *bench {
 		probes = append(probes, p)
 	}
 	bus := event.NewBus()
-	m, err := NewSystem(Options{
+	opts := Options{
 		Log: log, Bus: bus, Interval: 2 * time.Second, Timeout: time.Second,
 		Params:     linkhealth.DefaultParams(),
 		TCPTargets: []netip.AddrPort{netip.AddrPortFrom(t1, 443), netip.AddrPortFrom(t2, 443)},
 		HTTPCheck: HTTPCheckOptions{
 			Interval: 4 * time.Second, Timeout: 2 * time.Second,
-			DNS:  []netip.Addr{netip.MustParseAddr("203.0.113.53")},
+			DNS:  []DNSServer{{Proto: DNSPlain, Addr: netip.AddrPortFrom(labDNS, 53)}},
 			URLs: []HTTPCheckURL{{URL: "http://check.lab/generate_204", Status: 204}},
 		},
 		// Первый источник недоступен (порт закрыт), второй отвечает заглушкой
 		// «ok» — каждый замер проверяет переход на запасной.
 		SpeedTest: SpeedTestOptions{URLs: []string{"http://203.0.113.10:81/none", "http://203.0.113.10/", "http://203.0.113.10/bytes?n=200000000"}, Hour: -1, Duration: 6 * time.Second, MaxBytes: 200_000_000},
-	}, probes)
+	}
+	if tweak != nil {
+		tweak(&opts)
+	}
+	m, err := NewSystem(opts, probes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,4 +384,56 @@ func TestProbeSocketFollowsRecreatedInterface(t *testing.T) {
 	since := time.Now()
 	b.wait(t, "lte", model.LinkStateRestricted, 20*time.Second)
 	t.Logf("measure: whitelist mode detected %v after interface recreation", time.Since(since).Round(100*time.Millisecond))
+}
+
+// Как в реальной сети (найдено со стенда по домашнему каналу): открытый DNS на
+// порт 53 к сторонним серверам закрыт, DoT и DoH работают. С DNS на порт 53
+// HTTP-проверка ложно делает канал restricted; с DoT/DoH канал остаётся up.
+func TestHTTPCheckSurvivesBlockedPlainDNS(t *testing.T) {
+	pem, err := os.ReadFile(labDoHCA)
+	if err != nil {
+		t.Fatalf("lab DoH CA: %v", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pem) {
+		t.Fatal("lab DoH CA: no certificates")
+	}
+	block := func(t *testing.T) {
+		nftIn(t, "tl-isp1", "table ip tl_nodns { chain f { type filter hook forward priority 0; udp dport 53 drop; tcp dport 53 drop; }; }")
+		t.Cleanup(func() {
+			_ = exec.Command("ip", "netns", "exec", "tl-isp1", "nft", "delete", "table", "ip", "tl_nodns").Run()
+		})
+	}
+
+	t.Run("plain DNS fails", func(t *testing.T) {
+		b := start(t)
+		block(t)
+		since := time.Now()
+		b.wait(t, "isp1", model.LinkStateRestricted, 25*time.Second)
+		t.Logf("measure: blocked port 53 → restricted in %v", time.Since(since).Round(100*time.Millisecond))
+		if st, _ := b.mon.Status("isp2"); st.Health.State != model.LinkStateUp {
+			t.Errorf("isp2 affected: %s (%s)", st.Health.State, st.Health.Reason)
+		}
+	})
+	for _, srv := range []DNSServer{
+		{Proto: DNSOverHTTPS, Addr: netip.AddrPortFrom(labDNS, 443), URL: "https://203.0.113.53/dns-query"},
+		{Proto: DNSOverTLS, Addr: netip.AddrPortFrom(labDNS, 853)},
+	} {
+		name := map[DNSProto]string{DNSOverHTTPS: "DoH", DNSOverTLS: "DoT"}[srv.Proto]
+		t.Run(name+" keeps link up", func(t *testing.T) {
+			b := startWith(t, func(o *Options) {
+				o.HTTPCheck.DNS = []DNSServer{srv}
+				o.HTTPCheck.RootCAs = roots
+			})
+			block(t)
+			// 5 проверок по 4 с: при отказе хватило бы двух (fail_after 2).
+			deadline := time.Now().Add(20 * time.Second)
+			for time.Now().Before(deadline) {
+				if st, _ := b.mon.Status("isp1"); st.Health.State != model.LinkStateUp {
+					t.Fatalf("isp1 with %s: %s (%s)", name, st.Health.State, st.Health.Reason)
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+		})
+	}
 }
