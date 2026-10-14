@@ -171,6 +171,19 @@ classes:
     allow_proxy: false
     priority: normal
 
+  # Свои трансляции (YouTube, Twitch): канал с лучшей отдачей на весь эфир;
+  # LTE нет и в запасных. Каждая платформа — отдельное соединение, поэтому
+  # мультистрим может занять отдачу разных каналов.
+  - id: broadcast
+    name: Свои трансляции
+    selector: best_upload
+    stickiness: destination
+    sticky_ttl: 12h
+    links: [isp1, isp2]
+    method: auto
+    allow_proxy: true
+    priority: normal
+
   - id: default
     name: Прочее
     selector: balanced

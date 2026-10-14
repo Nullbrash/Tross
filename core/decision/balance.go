@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"math"
 	"slices"
+	"time"
 
 	"tross/core/model"
 )
@@ -18,8 +19,9 @@ type LinkShare struct {
 // политики (Links; пусто — все, кроме Fallback) берутся пригодные каналы, а
 // если таких нет — пригодные из Fallback. Селектор:
 //   - ordered — первый пригодный (в порядке Links или по приоритету);
-//   - lowest_latency — с наименьшей задержкой;
+//   - lowest_latency — с наименьшей задержкой (с учётом джиттера);
 //   - best_throughput — с наибольшей измеренной скоростью;
+//   - best_upload — с наибольшей измеренной отдачей;
 //   - balanced — все пригодные, вес по измеренной скорости (без замеров — поровну).
 //
 // Пустой результат — пригодных каналов нет.
@@ -38,6 +40,11 @@ func Balance(p model.Policy, links []model.LinkStatus) []LinkShare {
 	case model.SelectBestThroughput:
 		best := slices.MaxFunc(pool, func(a, b model.LinkStatus) int {
 			return cmp.Compare(a.Health.Throughput.DownBps, b.Health.Throughput.DownBps)
+		})
+		return []LinkShare{{best.Link.ID, 1}}
+	case model.SelectBestUpload:
+		best := slices.MaxFunc(pool, func(a, b model.LinkStatus) int {
+			return cmp.Compare(a.Health.Throughput.UpBps, b.Health.Throughput.UpBps)
 		})
 		return []LinkShare{{best.Link.ID, 1}}
 	case model.SelectBalanced:
@@ -82,7 +89,16 @@ func rttOrMax(l model.LinkStatus) int64 {
 	if l.Health.RTT <= 0 {
 		return math.MaxInt64
 	}
-	return int64(l.Health.RTT)
+	return int64(EffectiveRTT(l.Health))
+}
+
+// EffectiveRTT — задержка с поправкой на нестабильность: RTT + 2 × джиттер.
+// Ровные 12 мс лучше 8 мс со скачками до 30.
+func EffectiveRTT(h model.LinkHealth) time.Duration {
+	if h.RTT <= 0 {
+		return 0
+	}
+	return h.RTT + 2*h.Jitter
 }
 
 // weighted — веса в процентах от суммарной скорости (минимум 1: канал не

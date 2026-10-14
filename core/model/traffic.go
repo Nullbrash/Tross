@@ -56,6 +56,8 @@ type Selector string
 const (
 	SelectLowestLatency  Selector = "lowest_latency"
 	SelectBestThroughput Selector = "best_throughput"
+	// SelectBestUpload — с наибольшей отдачей (свои трансляции).
+	SelectBestUpload Selector = "best_upload"
 	// SelectBalanced — распределение соединений по каналам с учётом их ёмкости.
 	SelectBalanced Selector = "balanced"
 	// SelectOrdered — первый пригодный канал в порядке списка Links.
@@ -64,7 +66,7 @@ const (
 
 func (s Selector) Valid() bool {
 	switch s {
-	case SelectLowestLatency, SelectBestThroughput, SelectBalanced, SelectOrdered:
+	case SelectLowestLatency, SelectBestThroughput, SelectBestUpload, SelectBalanced, SelectOrdered:
 		return true
 	}
 	return false
@@ -82,10 +84,14 @@ const (
 	// StickDestination — пара «устройство + домен/адрес» закреплена за каналом
 	// надолго (банки, сервисы с капчей).
 	StickDestination Stickiness = "destination"
+	// StickService — все соединения устройства к одному сервису (все его
+	// части) идут одним каналом: ссылки на видео YouTube подписаны внешним
+	// адресом, с которого открыта страница.
+	StickService Stickiness = "service"
 )
 
 func (s Stickiness) Valid() bool {
-	return s == StickNone || s == StickSession || s == StickDestination
+	return s == StickNone || s == StickSession || s == StickDestination || s == StickService
 }
 
 // Priority — приоритет трафика в очередях (CAKE diffserv, этап 3).
@@ -162,6 +168,18 @@ type Flow struct {
 	DeviceID string         `json:"device_id,omitempty"`
 	// Domain — из DNS-сопоставления или SNI; может быть пустым.
 	Domain string `json:"domain,omitempty"`
+	// Signature — признак протокола по первому пакету с данными («stun»,
+	// «discord_voice», «bittorrent»…); у UDP он есть до выбора канала, у TCP
+	// первый пакет — SYN без данных, и признак приходит позже.
+	Signature string `json:"signature,omitempty"`
+}
+
+// Key — устройство для закреплений: DeviceID, иначе адрес источника.
+func (f Flow) Key() string {
+	if f.DeviceID != "" {
+		return f.DeviceID
+	}
+	return f.Src.Addr().String()
 }
 
 // Classification — результат работы классификатора.
@@ -169,8 +187,14 @@ type Classification struct {
 	Class TrafficClass `json:"class"`
 	// Confidence — от 0 до 1; низкая уверенность допускает переклассификацию.
 	Confidence float64 `json:"confidence"`
-	// Source — чем определён класс: "rule", "domain", "port", "default" и т.п.
+	// Source — чем определён класс: "rule:…", "profile:сервис/часть",
+	// "list:…", "default".
 	Source string `json:"source"`
+	// Service и Part — сервис и его часть из профиля (пусто — не из профиля).
+	Service string `json:"service,omitempty"`
+	Part    string `json:"part,omitempty"`
+	// PinService — часть требует закрепления «устройство + сервис».
+	PinService bool `json:"pin_service,omitempty"`
 }
 
 // Decision — итог движка решений для соединения: «канал + метод».

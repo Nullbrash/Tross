@@ -1,0 +1,137 @@
+# Встроенный каталог профилей сервисов. Обновляется вместе с проектом;
+# пользователь переопределяет профиль целиком своим с тем же id.
+#
+# match — варианты (любой); внутри варианта — все поля: proto, ports (порт
+# назначения), domains (суффиксы), networks (IPv4), signature (признак
+# первого пакета). Домены работают, когда есть сопоставление «домен →
+# адрес» (резолвер); до тех пор — порты, сети и признаки.
+services:
+  - id: steam
+    name: Steam
+    parts:
+      - id: cm
+        name: Вход, друзья, чат
+        class: ip_sensitive
+        match:
+          - { domains: [steamserver.net] }
+          - { proto: tcp, ports: ["27015-27050"], networks: &valve [103.10.124.0/23, 103.28.54.0/24, 146.66.152.0/24, 146.66.155.0/24, 155.133.224.0/19, 162.254.192.0/21, 185.25.180.0/22, 192.69.96.0/22, 205.196.6.0/24, 208.64.200.0/22, 208.78.164.0/22, 45.121.184.0/24] }
+      - id: download
+        name: Загрузка игр и обновлений
+        class: bulk
+        match:
+          # akamaihd.net — общий домен Akamai с чужими сайтами, сюда не входит.
+          - { domains: [steamcontent.com] }
+      - id: game
+        name: Игровой трафик
+        class: gaming
+        match:
+          - { proto: udp, ports: ["27000-27250"] }
+      - id: p2p-voice
+        name: P2P и голосовой чат
+        class: voip
+        match:
+          # 27014-27030 сюда не входят: через сеть Valve (ретрансляторы SDR) на
+          # те же порты идёт обычный игровой трафик.
+          - { proto: udp, ports: ["3478", "4379-4380"], networks: *valve }
+      - id: store
+        name: Магазин и сообщество
+        class: default
+        match:
+          - { domains: [steampowered.com, steamcommunity.com, steamstatic.com, steamusercontent.com, steamconnecttest.com] }
+
+  - id: youtube
+    name: YouTube
+    parts:
+      - id: video
+        name: Сайт и видео
+        class: streaming
+        # Ссылки на видео подписаны адресом, с которого открыта страница.
+        pin_service: true
+        match:
+          - { domains: [youtube.com, youtu.be, googlevideo.com, ytimg.com, ggpht.com, youtube-nocookie.com, youtubekids.com, youtubei.googleapis.com, youtubeembeddedplayer.googleapis.com, jnn-pa.googleapis.com, yt3.googleusercontent.com, wide-youtube.l.google.com, youtube-ui.l.google.com, ytimg.l.google.com] }
+      - id: live
+        name: Своя трансляция (приём RTMP/RTMPS)
+        class: broadcast
+        match:
+          - { domains: [rtmp.youtube.com, rtmps.youtube.com] }
+
+  - id: twitch
+    name: Twitch
+    parts:
+      - id: watch
+        name: Просмотр
+        class: streaming
+        pin_service: true
+        match:
+          - { domains: [twitch.tv, ttvnw.net, jtvnw.net] }
+      - id: live
+        name: Своя трансляция (приём)
+        class: broadcast
+        match:
+          - { domains: [contribute.live-video.net] }
+
+  - id: discord
+    name: Discord
+    parts:
+      - id: app
+        name: Интерфейс, API, CDN
+        class: default
+        match:
+          - { domains: [discord.com, discordapp.com, discord.gg, discordapp.net, discordcdn.com, discord.app, discord.co, discord.dev, discord.new, discord.gift, discord.gifts, discordstatus.com, dis.gd] }
+      - id: gateway
+        name: Постоянное соединение чата
+        class: ip_sensitive
+        match:
+          - { domains: [gateway.discord.gg] }
+      - id: voice
+        name: Голос, видео, Go Live
+        class: voip
+        match:
+          - { domains: [discord.media] }
+          - { proto: udp, signature: discord_voice }
+      - id: updates
+        name: Обновления
+        class: bulk
+        match:
+          - { domains: [updates.discord.com, dl2.discordapp.net] }
+
+  - id: calls
+    name: Звонки (STUN, WebRTC, Telegram)
+    parts:
+      - id: stun
+        name: Голос и видео по STUN
+        class: voip
+        match:
+          - { proto: udp, signature: stun }
+
+  - id: torrent
+    name: Торренты
+    parts:
+      - id: peers
+        name: Пиры, DHT, трекеры
+        class: bulk
+        match:
+          - { proto: udp, signature: utp }
+          - { proto: udp, signature: dht }
+          # У TCP признак виден только после выбора канала — по нему
+          # соединение узнаётся задним числом, канал не меняется.
+          - { proto: tcp, signature: bittorrent }
+
+  - id: minecraft
+    name: Minecraft Java
+    parts:
+      - id: game
+        name: Игра и свои серверы
+        class: gaming
+        match:
+          - { proto: tcp, ports: ["25565"] }
+      - id: auth
+        name: Вход в аккаунт
+        class: ip_sensitive
+        match:
+          - { domains: [sessionserver.mojang.com, authserver.mojang.com, api.minecraftservices.com] }
+      - id: download
+        name: Загрузка игры и ресурсов
+        class: bulk
+        match:
+          - { domains: [resources.download.minecraft.net, libraries.minecraft.net, piston-data.mojang.com, piston-meta.mojang.com] }
