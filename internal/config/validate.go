@@ -442,7 +442,7 @@ func (c *Config) validateProxy(p *problems) {
 	if x.TProxyPortBase < 1024 {
 		p.add("proxy.tproxy_port_base", "must be >= 1024")
 	}
-	if m := x.RoutingMarkBase; m == 0 || m&LinkMarkMask != 0 || m&zapretMark != 0 {
-		p.add("proxy.routing_mark_base", "%#x must not overlap link marks %#x or zapret mark %#x", m, LinkMarkMask, zapretMark)
+	if m := x.RoutingMarkBase; m == 0 || m&LinkMarkMask != 0 || m&zapretMark != 0 || m&TinMarkMask != 0 {
+		p.add("proxy.routing_mark_base", "%#x must not overlap link marks %#x, CAKE tin marks %#x or zapret mark %#x", m, LinkMarkMask, TinMarkMask, zapretMark)
 	}
 }

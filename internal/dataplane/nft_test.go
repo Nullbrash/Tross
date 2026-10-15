@@ -25,7 +25,7 @@ func TestRenderBase(t *testing.T) {
 		"add table inet tross\ndelete table inet tross\ntable inet tross {",
 		"set tross_dpi4 {", "set tross_proxy4 {", "flags timeout",
 		"type filter hook prerouting priority mangle;",
-		"ct mark and 0xff00 != 0 meta mark set ct mark and 0xffff return",
+		"ct mark and 0xff00 != 0 meta mark set ct mark and 0x700ffff return",
 		`iifname "lan" ct state new jump classify`,
 		// Без классов — один default: всё в его цепочку, как прежний choose.
 		"chain classify {\n\t\tmeta mark set 0x1 goto cls1\n\t}",

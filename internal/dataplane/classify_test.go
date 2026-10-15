@@ -128,7 +128,7 @@ func TestRenderClassifyRulesAndSets(t *testing.T) {
 	if gid != 1 || vid != 2 || bid != 4 {
 		t.Fatalf("class ids gaming=%d voip=%d bulk=%d", gid, vid, bid)
 	}
-	if strings.Index(got, "reject with tcp reset") > strings.Index(got, "meta mark set ct mark and 0xffff return") {
+	if strings.Index(got, "reject with tcp reset") > strings.Index(got, "meta mark set ct mark and 0x700ffff return") {
 		t.Error("BitTorrent guard must run before mark restore")
 	}
 	// Класс без закреплений (streaming) множеств закреплений не получает.

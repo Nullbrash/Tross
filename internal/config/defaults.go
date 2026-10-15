@@ -15,6 +15,10 @@ import (
 // 0x40000000 — диапазоны не должны пересекаться.
 const LinkMarkMask uint32 = 0x0000ff00
 
+// TinMarkMask — биты fwmark с корзиной CAKE класса (совпадает с
+// dataplane.TinMarkMask); метки прокси не должны их задевать.
+const TinMarkMask uint32 = 0x07000000
+
 func defaultTable(i int) int   { return 100 + i + 1 }
 func defaultMark(i int) uint32 { return uint32(i+1) << 8 }
 func addrs(s ...string) []netip.Addr {

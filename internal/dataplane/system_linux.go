@@ -36,7 +36,8 @@ type System struct {
 	up      bool
 	plan    []decision.ClassPlan  // текущие распределения и закрепления классов
 	routed  map[model.LinkID]bool // маршрут по умолчанию в таблице канала поставлен
-	prevSVM string                // src_valid_mark до Setup — вернуть при Teardown
+	shaping map[model.LinkID]Shaping
+	prevSVM string // src_valid_mark до Setup — вернуть при Teardown
 }
 
 var _ Dataplane = (*System)(nil)
@@ -103,6 +104,14 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	s.plan = initialPlan(c, spec.Links, s.routed)
 	if err := runNft(ctx, renderNAT(spec)+renderBase(spec)+renderPlan(c, spec.Links, s.plan)); err != nil {
 		return fail(err)
+	}
+	// Очереди — качество, а не связь: без них сеть работает, поэтому ошибка
+	// не срывает Setup (fail-open), а видна в журнале.
+	s.shaping = make(map[model.LinkID]Shaping, len(spec.Links))
+	for i, l := range spec.Links {
+		if err := s.shapeLocked(ctx, i, l); err != nil {
+			s.log.Warn("dataplane: link queues not set", "link", l.Link.ID, "err", err)
+		}
 	}
 	s.up = true
 	s.log.Info("dataplane: setup done", "links", len(spec.Links), "routed", len(s.routed))
@@ -183,7 +192,7 @@ func (s *System) routeLocked(l LinkSpec) error {
 // нужным (интерфейс и шлюз — из конфига или DHCP) и ставит заново, если его
 // нет или он устарел. Канал, которому маршрут поставить нельзя (интерфейса
 // нет), помечается без маршрута — SetBalance не включит его, пока не починится.
-func (s *System) RepairRoutes(context.Context) error {
+func (s *System) RepairRoutes(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.up {
@@ -207,6 +216,9 @@ func (s *System) RepairRoutes(context.Context) error {
 		}
 		s.log.Info("dataplane: link route restored", "link", l.Link.ID)
 		s.routed[l.Link.ID] = true
+	}
+	if err := s.repairShapingLocked(ctx); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
@@ -290,6 +302,13 @@ func (s *System) cleanupLocked(ctx context.Context, purge bool) error {
 	script := fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftTable, nftTable)
 	if purge {
 		script += fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftNATTable, nftNATTable)
+		// Очереди переживают остановку демона (как NAT) — снимает их только purge.
+		s.shaping = map[model.LinkID]Shaping{}
+		for i, l := range s.spec.Links {
+			if err := s.unshapeLocked(ctx, i, l); err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
 	if err := runNft(ctx, script); err != nil {
 		errs = append(errs, err)

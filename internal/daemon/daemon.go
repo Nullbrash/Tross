@@ -18,6 +18,7 @@ import (
 	"tross/core/linkhealth"
 	"tross/core/model"
 	"tross/core/profile"
+	"tross/core/sqm"
 	"tross/internal/api"
 	"tross/internal/config"
 	"tross/internal/dataplane"
@@ -269,7 +270,7 @@ func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
 	}
 	for _, l := range cfg.Links {
 		spec.Links = append(spec.Links, dataplane.LinkSpec{
-			Link: l.Model(), Table: l.Table, FwMark: l.FwMark, Gateway: l.GatewayAddr(),
+			Link: l.Model(), Table: l.Table, FwMark: l.FwMark, Gateway: l.GatewayAddr(), SQM: l.SQM.Enabled,
 		})
 	}
 	cat, err := serviceCatalog(cfg)
@@ -284,7 +285,7 @@ func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
 		if len(cl.Links) > 0 {
 			allowed = append(slices.Clone(cl.Links), cl.Fallback...)
 		}
-		policies[cl.ID] = dataplane.ClassPolicy{Pin: cl.Stickiness, PinTTL: cl.StickyTTL, Allowed: allowed}
+		policies[cl.ID] = dataplane.ClassPolicy{Pin: cl.Stickiness, PinTTL: cl.StickyTTL, Allowed: allowed, Tin: sqm.TinFor(cl.Priority)}
 	}
 	var rules []dataplane.UserRule
 	for _, r := range cfg.Classify.Rules {

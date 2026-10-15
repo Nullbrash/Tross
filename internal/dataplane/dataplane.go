@@ -33,6 +33,8 @@ type LinkSpec struct {
 	Table   int
 	FwMark  uint32
 	Gateway netip.Addr // невалидный адрес — шлюз берётся из DHCP
+	// SQM — очереди CAKE на канале (sqm.enabled).
+	SQM bool
 }
 
 // Spec — базовая разметка, которую демон ставит при старте.
@@ -67,9 +69,13 @@ type Dataplane interface {
 	// RepairRoutes ставит заново маршруты таблиц каналов, если их нет или
 	// сменился шлюз из DHCP: ядро удаляет маршрут вместе с пересозданным или
 	// выключенным интерфейсом, и без этого канал не вернулся бы до перезапуска.
+	// Заодно — очереди CAKE: они тоже уходят вместе с интерфейсом.
 	RepairRoutes(ctx context.Context) error
 	// Connections — снимок размеченных соединений conntrack (только IPv4).
 	Connections(ctx context.Context) ([]Connection, error)
 	// Pins — действующие закрепления из множеств ядра.
 	Pins(ctx context.Context) ([]Pin, error)
+	// SetShaping задаёт скорость очередей CAKE каналов (0 — без
+	// ограничения); каналы без SQM пропускаются. Очередь не сбрасывается.
+	SetShaping(ctx context.Context, shaping []Shaping) error
 }

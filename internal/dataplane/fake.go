@@ -99,6 +99,13 @@ func (f *Fake) Connections(context.Context) ([]Connection, error) {
 	return append([]Connection(nil), f.conns...), nil
 }
 
+func (f *Fake) SetShaping(_ context.Context, shaping []Shaping) error {
+	for _, sh := range shaping {
+		f.record("set-shaping", sh.Link, sh.DownBps, sh.UpBps)
+	}
+	return nil
+}
+
 func (f *Fake) Pins(context.Context) ([]Pin, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

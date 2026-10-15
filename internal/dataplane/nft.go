@@ -40,10 +40,10 @@ func renderBase(spec Spec) string {
 	b.WriteString(renderClassifyChains(c))
 	b.WriteString("\tchain prerouting {\n\t\ttype filter hook prerouting priority mangle; policy accept;\n")
 	b.WriteString(renderBTGuard(c, spec.Links, spec.LANInterface))
-	// Метка (канал и класс) восстанавливается для всех пакетов соединения,
+	// Метка (канал, класс, корзина) восстанавливается для всех пакетов соединения,
 	// включая ответы из канала: так rp_filter (src_valid_mark=1) находит
 	// обратный путь через таблицу канала, а соединение никогда не переезжает.
-	fmt.Fprintf(&b, "\t\tct mark and %#x != 0 meta mark set ct mark and %#x return\n", LinkMarkMask, LinkMarkMask|classMarkMask)
+	fmt.Fprintf(&b, "\t\tct mark and %#x != 0 meta mark set ct mark and %#x return\n", LinkMarkMask, LinkMarkMask|classMarkMask|TinMarkMask)
 	fmt.Fprintf(&b, "\t\tiifname %s ct state new jump classify\n", quote(spec.LANInterface))
 	b.WriteString(renderForwardMarks(spec))
 	b.WriteString("\t}\n")

@@ -11,6 +11,7 @@ import (
 	"tross/core/decision"
 	"tross/core/model"
 	"tross/core/profile"
+	"tross/core/sqm"
 )
 
 // classMarkMask — младший байт fwmark/ct mark: номер класса соединения.
@@ -57,6 +58,8 @@ type ClassPolicy struct {
 	PinTTL time.Duration
 	// Allowed — каналы класса (основные и запасные); пусто — все.
 	Allowed []model.LinkID
+	// Tin — корзина CAKE класса (биты TinMarkMask метки); 0 — по DSCP.
+	Tin sqm.Tin
 }
 
 // Classify — статическая часть классификации (ставится в Setup); пусто —
@@ -212,6 +215,13 @@ func (c Classify) withDefault() Classify {
 	return c
 }
 
+// markOf — метка нового соединения класса до выбора канала: номер класса и
+// корзина CAKE (канал добавит цепочка класса).
+func (c Classify) markOf(cl model.TrafficClass) uint32 {
+	id := c.classID(cl)
+	return id | uint32(c.Policies[c.Classes[id-1]].Tin)<<tinShift
+}
+
 func (c Classify) classID(cl model.TrafficClass) uint32 {
 	if i := slices.Index(c.Classes, cl); i >= 0 {
 		return uint32(i + 1)
@@ -296,9 +306,9 @@ func renderClassifyChains(c Classify) string {
 		if r.Service != "" {
 			target = serviceChain(slices.Index(c.Services, r.Service))
 		}
-		fmt.Fprintf(&b, "\t\t%s meta mark set %#x goto %s\n", matchExpr(r), cid, target)
+		fmt.Fprintf(&b, "\t\t%s meta mark set %#x goto %s\n", matchExpr(r), c.markOf(r.Class), target)
 	}
-	fmt.Fprintf(&b, "\t\tmeta mark set %#x goto %s\n", c.classID(model.ClassDefault), classChain(c.classID(model.ClassDefault)))
+	fmt.Fprintf(&b, "\t\tmeta mark set %#x goto %s\n", c.markOf(model.ClassDefault), classChain(c.classID(model.ClassDefault)))
 	b.WriteString("\t}\n")
 	return b.String()
 }
@@ -386,7 +396,7 @@ func renderPlan(c Classify, links []LinkSpec, plan []decision.ClassPlan) string 
 		byClass[p.Class] = p
 	}
 	var b strings.Builder
-	chain := func(name string, cid uint32, cl model.TrafficClass, set func(i int) string, key string) {
+	chain := func(name string, mark uint32, cl model.TrafficClass, set func(i int) string, key string) {
 		p := byClass[cl]
 		pol := c.Policies[cl]
 		fmt.Fprintf(&b, "flush chain inet %s %s\n", nftTable, name)
@@ -396,7 +406,7 @@ func renderPlan(c Classify, links []LinkSpec, plan []decision.ClassPlan) string 
 			// просмотр теряли бы закрепление посреди сессии).
 			for _, id := range p.PinLinks {
 				if i := idx(id); i >= 0 {
-					fmt.Fprintf(&b, "add rule inet %s %s %s @%s update @%s { %s } meta mark set %#x goto commit\n", nftTable, name, key, set(i), set(i), key, links[i].FwMark|cid)
+					fmt.Fprintf(&b, "add rule inet %s %s %s @%s update @%s { %s } meta mark set %#x goto commit\n", nftTable, name, key, set(i), set(i), key, links[i].FwMark|mark)
 				}
 			}
 			// Закрепления за каналами вне PinLinks больше не действуют —
@@ -407,7 +417,7 @@ func renderPlan(c Classify, links []LinkSpec, plan []decision.ClassPlan) string 
 				}
 			}
 		}
-		pick := pickExpr(links, p.Shares, cid)
+		pick := pickExpr(links, p.Shares, mark)
 		switch {
 		case pick == "" && len(pol.Allowed) > 0 && len(pol.Allowed) < len(links):
 			// TCP — сбросом: клиент узнаёт об отказе сразу, а не по повтору SYN.
@@ -438,18 +448,18 @@ func renderPlan(c Classify, links []LinkSpec, plan []decision.ClassPlan) string 
 				key = "ip saddr . ip daddr"
 			}
 		}
-		chain(classChain(cid), cid, cl, set, key)
+		chain(classChain(cid), c.markOf(cl), cl, set, key)
 	}
 	for si, svc := range c.Services {
 		cl := c.serviceClass(svc)
-		chain(serviceChain(si), c.classID(cl), cl, func(i int) string { return serviceSet(si, i) }, "ip saddr")
+		chain(serviceChain(si), c.markOf(cl), cl, func(i int) string { return serviceSet(si, i) }, "ip saddr")
 	}
 	return b.String()
 }
 
 // pickExpr — выбор канала новой сессии: один — метка; несколько — jhash
 // «устройство + адрес назначения» по весам (как Engine.Decide для balanced).
-func pickExpr(links []LinkSpec, shares []decision.LinkShare, cid uint32) string {
+func pickExpr(links []LinkSpec, shares []decision.LinkShare, mark uint32) string {
 	type part struct {
 		mark   uint32
 		weight int
@@ -459,7 +469,7 @@ func pickExpr(links []LinkSpec, shares []decision.LinkShare, cid uint32) string 
 	for _, s := range shares {
 		i := slices.IndexFunc(links, func(l LinkSpec) bool { return l.Link.ID == s.Link })
 		if i >= 0 && s.Weight > 0 {
-			parts = append(parts, part{links[i].FwMark | cid, s.Weight})
+			parts = append(parts, part{links[i].FwMark | mark, s.Weight})
 			total += s.Weight
 		}
 	}
