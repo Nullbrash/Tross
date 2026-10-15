@@ -191,3 +191,56 @@ func TestInboundGuardLimitsConcurrent(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 	}
 }
+
+// Провайдер стенда направляет к нам пакеты на адреса LAN (на настоящем
+// канале этого не бывает только потому, что провайдер так не делает):
+// без Tross они доходят до устройства, с Tross — нет, и после остановки
+// демона — тоже нет; исходящие соединения дома при этом работают.
+func TestInboundFilterBlocksUnsolicited(t *testing.T) {
+	s := newSystem(t)
+	clientServer(t)
+	ns := func(name string, args ...string) {
+		t.Helper()
+		if out, err := run(t, "ip", append([]string{"netns", "exec", name, "ip", "route"}, args...)...); err != nil {
+			t.Fatalf("%s: ip route %v: %v %s", name, args, err, out)
+		}
+	}
+	ns("tl-isp1", "add", "192.168.77.0/24", "via", "100.64.1.2")
+	t.Cleanup(func() { _, _ = run(t, "ip", "netns", "exec", "tl-isp1", "ip", "route", "del", "192.168.77.0/24") })
+	ns("tl-inet", "add", "192.168.77.0/24", "via", "198.18.1.1")
+	t.Cleanup(func() { _, _ = run(t, "ip", "netns", "exec", "tl-inet", "ip", "route", "del", "192.168.77.0/24") })
+	if out, _ := run(t, "ip", "route", "show", "default"); strings.TrimSpace(out) == "" {
+		if out, err := run(t, "ip", "route", "add", "default", "via", "100.64.1.1", "dev", "wan1"); err != nil {
+			t.Fatalf("main default route: %v %s", err, out)
+		}
+		t.Cleanup(func() { _, _ = run(t, "ip", "route", "del", "default", "via", "100.64.1.1", "dev", "wan1") })
+	}
+	direct := func() bool {
+		out, err := run(t, "ip", "netns", "exec", "tl-inet", "wget", "-q", "-T", "2", "--tries=1", "-O", "-",
+			"http://"+client.String()+":"+fwdPort+"/")
+		return err == nil && strings.TrimSpace(out) == "ok"
+	}
+	if !direct() {
+		t.Fatal("without Tross the device must be reachable on the bench — the check would prove nothing")
+	}
+
+	ctx := context.Background()
+	if err := s.Setup(ctx, standSpec()); err != nil {
+		t.Fatal(err)
+	}
+	setPlan(t, s, decision.ClassPlan{Class: model.ClassDefault, Shares: one("isp1"), PinLinks: []model.LinkID{"isp1"}})
+	if direct() {
+		t.Error("unsolicited inbound reached the device through Tross")
+	}
+	if got, err := fetch(t, 100_000); err != nil || got != 100_000 {
+		t.Errorf("outbound from LAN with the filter: %d, %v", got, err)
+	}
+	if err := s.Teardown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if direct() {
+		t.Error("unsolicited inbound reached the device after the daemon stopped")
+	}
+	nat, _ := run(t, "nft", "list", "chain", "inet", nftNATTable, "forward")
+	t.Logf("measure: inbound filter after teardown:\n%s", nat)
+}

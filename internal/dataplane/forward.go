@@ -151,6 +151,25 @@ func renderForwardNAT(spec Spec) string {
 	return b.String()
 }
 
+// renderInboundFilter — из каналов пересылаются только ответы на свои
+// соединения и пробросы; всё прочее (в том числе пакеты на адреса LAN,
+// если их направит к нам кто-то в сети провайдера) отбрасывается, как на
+// обычном роутере. Живёт в tross_nat: защита не должна пропадать вместе с
+// демоном, а исходящим соединениям LAN она не мешает и без него.
+func renderInboundFilter(spec Spec) string {
+	if len(spec.Links) == 0 {
+		return ""
+	}
+	wans := ifnames(spec.Links)
+	var b strings.Builder
+	b.WriteString("\tchain forward {\n\t\ttype filter hook forward priority filter; policy accept;\n")
+	fmt.Fprintf(&b, "\t\tiifname { %s } ct state established,related accept\n", wans)
+	fmt.Fprintf(&b, "\t\tiifname { %s } ct status dnat accept\n", wans)
+	fmt.Fprintf(&b, "\t\tiifname { %s } counter drop\n", wans)
+	b.WriteString("\t}\n")
+	return b.String()
+}
+
 func ifnames(links []LinkSpec) string {
 	names := make([]string, len(links))
 	for i, l := range links {

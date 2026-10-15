@@ -67,7 +67,7 @@ func TestRenderForwards(t *testing.T) {
 
 func TestNoForwardsNoInboundChains(t *testing.T) {
 	spec := testSpec()
-	if nat := renderNAT(spec); strings.Contains(nat, "dnat") || strings.Contains(nat, "guard") {
+	if nat := renderNAT(spec); strings.Contains(nat, "dnat ip to") || strings.Contains(nat, "chain guard") {
 		t.Errorf("NAT without forwards:\n%s", nat)
 	}
 	if err := validateForwards(spec); err != nil {
@@ -88,5 +88,32 @@ func TestValidateForwards(t *testing.T) {
 		if validateForwards(spec) == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// Фильтр входящих стоит всегда, даже без пробросов: из каналов — только
+// ответы и пробросы, остальное отбрасывается; исходящие LAN не трогает.
+func TestInboundFilter(t *testing.T) {
+	nat := renderNAT(testSpec())
+	wans := `iifname { "wan1", "wan2", "wan3" } `
+	rules := []string{
+		"type filter hook forward priority filter; policy accept;\n",
+		wans + "ct state established,related accept\n",
+		wans + "ct status dnat accept\n",
+		wans + "counter drop\n",
+	}
+	last := -1
+	for _, r := range rules {
+		i := strings.Index(nat, r)
+		if i < 0 {
+			t.Fatalf("NAT table lacks:\n%s---\n%s", r, nat)
+		}
+		if i < last {
+			t.Errorf("rule out of order: %q", r)
+		}
+		last = i
+	}
+	if strings.Contains(nat, `iifname "lan"`) || strings.Contains(nat, "oifname { \"wan1\", \"wan2\", \"wan3\" } drop") {
+		t.Errorf("filter must not touch traffic from LAN:\n%s", nat)
 	}
 }

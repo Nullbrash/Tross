@@ -56,7 +56,9 @@ func renderBase(spec Spec) string {
 	return b.String()
 }
 
-// renderNAT — таблица masquerade на интерфейсах каналов; заменяется целиком.
+// renderNAT — таблица того, что переживает остановку демона (D-44):
+// masquerade на каналах, пробросы с защитой, фильтр входящих; заменяется
+// целиком.
 func renderNAT(spec Spec) string {
 	var wans []string
 	for _, l := range spec.Links {
@@ -66,6 +68,7 @@ func renderNAT(spec Spec) string {
 	fmt.Fprintf(&b, "add table inet %s\ndelete table inet %s\n", nftNATTable, nftNATTable)
 	fmt.Fprintf(&b, "table inet %s {\n", nftNATTable)
 	b.WriteString(renderForwardNAT(spec))
+	b.WriteString(renderInboundFilter(spec))
 	b.WriteString("\tchain postrouting {\n\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
 	if len(wans) > 0 {
 		fmt.Fprintf(&b, "\t\toifname { %s } masquerade\n", strings.Join(wans, ", "))
