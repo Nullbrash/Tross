@@ -56,8 +56,10 @@ const (
 	BasisRestored Basis = "restored"
 )
 
-// movable — база не из замера и не из конфига: её можно двигать по задержке.
-func (b Basis) movable() bool { return b == BasisPassive || b == BasisRestored }
+// movable — база — оценка по замерам, а не слово пользователя: двигается по
+// фактам (задержке под нагрузкой). Тест скорости — тоже оценка: сервер
+// теста бывает медленнее канала, а быстрее канала он показать не может.
+func (b Basis) movable() bool { return b != BasisManual && b != BasisNone }
 
 // Params — настройки одного направления одного канала.
 type Params struct {
@@ -230,7 +232,10 @@ func (s *Shaper) SetTested(bps uint64) bool {
 		return false
 	}
 	before := s.Rate()
-	s.base, s.basis = bps, BasisTest
+	// Тест — нижняя граница скорости канала: базу, уже выросшую по реальному
+	// трафику выше результата, он не опускает (иначе медленный сервер теста
+	// каждую ночь срезал бы канал заново); снижает её только задержка.
+	s.base, s.basis = max(s.base, bps), BasisTest
 	return s.Rate() != before
 }
 
@@ -277,8 +282,8 @@ func (s *Shaper) overload(at time.Time, bps uint64, delay time.Duration) string 
 	case s.basis.movable():
 		s.base = max(uint64(float64(s.base)*(1-s.p.StepDown)), s.p.MinRate)
 	default:
-		// База из теста или конфига, процент уже на пределе — дальше
-		// пользователь сам ограничил.
+		// База из конфига, процент уже на пределе — дальше пользователь сам
+		// ограничил.
 		return ""
 	}
 	return s.changed(at, rate, "delay +"+delay.String()+" under load")
@@ -295,7 +300,7 @@ func (s *Shaper) headroom(at time.Time, load float64) string {
 	case s.frac < s.p.Max:
 		s.frac = min(s.frac+s.p.StepUp, s.p.Max)
 	case s.basis.movable():
-		// Пассивная оценка — «не меньше чем»: канал тянет больше.
+		// Оценка по замерам — «не меньше чем»: канал тянет больше.
 		s.base = uint64(float64(s.base) * s.p.BaseGrow)
 	default:
 		return ""

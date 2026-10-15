@@ -1,6 +1,7 @@
 package sqm
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -105,9 +106,10 @@ func TestAutoStepsAndLimits(t *testing.T) {
 	if l.Down.Fraction() != 0.80 {
 		t.Errorf("floor: %.3f, want 0.80", l.Down.Fraction())
 	}
-	// База из теста под пределом не двигается: процент упёрся в 80 %.
-	if base, _ := l.Down.Base(); base != 100*mbit {
-		t.Errorf("tested base moved to %d", base)
+	// Задержка держится и на 80 %: база из теста — оценка, она снижается
+	// (база из конфига — нет, см. TestManualBaseStaysAtFloor).
+	if base, _ := l.Down.Base(); base >= 100*mbit {
+		t.Errorf("tested base did not shrink under persistent bloat: %d", base)
 	}
 	// Задержку дала отдача (упирается в свою очередь) — загрузку не трогаем.
 	at = at.Add(time.Minute)
@@ -255,4 +257,36 @@ func TestNoBaseBlamesDominantDirection(t *testing.T) {
 	if u == "" || l.Up.Rate() == 0 {
 		t.Errorf("saturated upload not learned: %q", u)
 	}
+}
+
+func TestManualBaseStaysAtFloor(t *testing.T) {
+	p := WiredParams()
+	l := &Link{Down: NewShaper(p, 100*mbit), Up: NewShaper(p, 0)}
+	at := t0
+	for range 30 {
+		at = at.Add(10 * time.Second)
+		l.Observe(Sample{At: at, DownBps: l.Down.Rate(), Delay: 40 * time.Millisecond})
+	}
+	if base, _ := l.Down.Base(); base != 100*mbit || l.Down.Rate() != 80*mbit {
+		t.Errorf("manual base %s, rate %s — want 100 and the 80 %% floor", Mbit(base), Mbit(l.Down.Rate()))
+	}
+}
+
+// Сервер теста медленнее канала (300 при настоящих 500): тест — нижняя
+// граница, база растёт по реальному трафику; следующий такой же тест её не
+// опускает обратно.
+func TestSlowTestServerDoesNotCapLink(t *testing.T) {
+	l := link(WiredParams())
+	l.Down.SetTested(300 * mbit)
+	rates := run(l, func(int) uint64 { return 500 * mbit }, 3000)
+	grown := rates[len(rates)-1]
+	if grown < 440*mbit || grown > 490*mbit {
+		t.Errorf("after 100 min of full load: %s, want just below 500 Mbit/s", Mbit(grown))
+	}
+	l.Down.SetTested(300 * mbit)
+	if l.Down.Rate() != grown {
+		t.Errorf("slow test cut the grown queue %s → %s", Mbit(grown), Mbit(l.Down.Rate()))
+	}
+	reached := slices.IndexFunc(rates, func(r uint64) bool { return r >= grown*95/100 })
+	t.Logf("tested 300, link 500: queue grew to %s; 95 %% of it after %v of full load", Mbit(grown), time.Duration(reached+1)*2*time.Second)
 }
