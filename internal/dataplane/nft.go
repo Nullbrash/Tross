@@ -45,6 +45,7 @@ func renderBase(spec Spec) string {
 	// обратный путь через таблицу канала, а соединение никогда не переезжает.
 	fmt.Fprintf(&b, "\t\tct mark and %#x != 0 meta mark set ct mark and %#x return\n", LinkMarkMask, LinkMarkMask|classMarkMask)
 	fmt.Fprintf(&b, "\t\tiifname %s ct state new jump classify\n", quote(spec.LANInterface))
+	b.WriteString(renderForwardMarks(spec))
 	b.WriteString("\t}\n")
 	// Собственный трафик машины с меткой канала на сокете (пробы монитора,
 	// замер скорости, позже — DNS и прокси-ядро): метка сохраняется в
@@ -64,6 +65,7 @@ func renderNAT(spec Spec) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "add table inet %s\ndelete table inet %s\n", nftNATTable, nftNATTable)
 	fmt.Fprintf(&b, "table inet %s {\n", nftNATTable)
+	b.WriteString(renderForwardNAT(spec))
 	b.WriteString("\tchain postrouting {\n\t\ttype nat hook postrouting priority srcnat; policy accept;\n")
 	if len(wans) > 0 {
 		fmt.Fprintf(&b, "\t\toifname { %s } masquerade\n", strings.Join(wans, ", "))

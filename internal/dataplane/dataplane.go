@@ -41,6 +41,9 @@ type Spec struct {
 	Links        []LinkSpec
 	// Classify — классы и правила классификации; пусто — один класс default.
 	Classify Classify
+	// Forwards — ручные пробросы портов; Guard — их общая защита.
+	Forwards []PortForward
+	Guard    InboundGuard
 }
 
 // Dataplane — всё, что демон меняет в сетевом стеке ядра.

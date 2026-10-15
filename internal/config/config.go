@@ -26,6 +26,7 @@ type Config struct {
 	Monitor  Monitor  `yaml:"monitor"`
 	Classes  []Class  `yaml:"classes"`
 	Classify Classify `yaml:"classify"`
+	Inbound  Inbound  `yaml:"inbound"`
 	DNS      DNS      `yaml:"dns"`
 	Lists    Lists    `yaml:"lists"`
 	DPI      DPI      `yaml:"dpi"`

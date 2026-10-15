@@ -25,6 +25,7 @@ type connDTO struct {
 	Dst      netip.AddrPort     `json:"dst"`
 	Link     model.LinkID       `json:"link,omitempty"`
 	Class    model.TrafficClass `json:"class,omitempty"`
+	Forward  netip.AddrPort     `json:"forward,omitzero"`
 	State    string             `json:"state,omitempty"`
 	TimeoutS int64              `json:"timeout_s"`
 	Packets  uint64             `json:"packets"`
@@ -33,7 +34,7 @@ type connDTO struct {
 
 func toConnDTO(c dataplane.Connection) connDTO {
 	return connDTO{
-		Proto: c.Proto, Src: c.Src, Dst: c.Dst, Link: c.Link, Class: c.Class, State: c.State,
+		Proto: c.Proto, Src: c.Src, Dst: c.Dst, Link: c.Link, Class: c.Class, Forward: c.Forward, State: c.State,
 		TimeoutS: int64(c.Timeout.Seconds()), Packets: c.Packets, Bytes: c.Bytes,
 	}
 }

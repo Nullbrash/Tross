@@ -18,8 +18,11 @@ type Connection struct {
 	// Соединения без метки (канал не назначен — идут по основной таблице)
 	// в список не попадают: Tross их не разметил.
 	Link model.LinkID
-	// Class пуст у собственного трафика машины (пробы, замеры скорости).
-	Class   model.TrafficClass
+	// Class пуст у собственного трафика машины (пробы, замеры скорости) и
+	// у входящих через проброс (у них заполнен Forward).
+	Class model.TrafficClass
+	// Forward — устройство и порт, куда проброшено входящее соединение (DNAT).
+	Forward netip.AddrPort
 	State   string
 	Timeout time.Duration
 	// Packets и Bytes — в обе стороны; нули — учёт conntrack выключен

@@ -291,6 +291,13 @@ func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
 		rules = append(rules, dataplane.UserRule{Name: r.Name, Class: r.Class, Devices: r.Devices, Match: r.Match})
 	}
 	spec.Classify = dataplane.CompileClassify(classes, policies, rules, cat)
+	for _, f := range cfg.Inbound.Forwards {
+		spec.Forwards = append(spec.Forwards, dataplane.PortForward{
+			Name: f.Name, Protos: f.Protos(), Ports: f.Port, To: f.To, ToPort: f.ToPort, Links: f.Links,
+		})
+	}
+	g := cfg.Inbound.Guard
+	spec.Guard = dataplane.InboundGuard{NewPerMinute: g.NewPerMinute, Burst: g.Burst, MaxConns: g.MaxConnections}
 	return spec, nil
 }
 

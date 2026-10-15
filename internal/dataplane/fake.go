@@ -47,6 +47,9 @@ func (f *Fake) Setup(_ context.Context, spec Spec) error {
 	for _, l := range spec.Links {
 		f.record("link", l.Link.ID, l.Link.Interface, fmt.Sprintf("table=%d", l.Table), fmt.Sprintf("mark=%#x", l.FwMark))
 	}
+	for _, fw := range spec.Forwards {
+		f.record("forward", fw.Name, fw.Protos, fw.Ports, fw.To, fw.ToPort, fw.Links)
+	}
 	f.record("setup", spec.LANInterface)
 	return nil
 }

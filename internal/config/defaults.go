@@ -62,6 +62,8 @@ func (c *Config) applyDefaults() {
 		}
 	}
 
+	c.applyInboundDefaults()
+
 	m := &c.Monitor
 	// Цели — зарубежные в разных AS (Cloudflare, Google, Quad9) и российские в
 	// разных AS (Яндекс, MSK-IX, Билайн): по двум группам различаются «белые

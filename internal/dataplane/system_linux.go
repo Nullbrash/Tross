@@ -127,6 +127,9 @@ func validateSpec(spec Spec) error {
 	if len(spec.Links) >= rulePrefSpan {
 		return errors.New("dataplane: too many links")
 	}
+	if err := validateForwards(spec); err != nil {
+		return fmt.Errorf("dataplane: %w", err)
+	}
 	return nil
 }
 
@@ -438,6 +441,10 @@ func (s *System) Connections(context.Context) ([]Connection, error) {
 		cn.Link, cn.Class = decodeMark(spec, f.Mark)
 		if f.ProtoInfo.TCP != nil {
 			cn.State = tcpState(f.ProtoInfo.TCP.State)
+		}
+		if f.Status.DstNAT() {
+			r := f.TupleReply
+			cn.Forward = netip.AddrPortFrom(r.IP.SourceAddress.Unmap(), r.Proto.SourcePort)
 		}
 		out = append(out, cn)
 	}

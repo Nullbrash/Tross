@@ -372,3 +372,43 @@ classify:
 		}
 	}
 }
+
+func TestInboundSection(t *testing.T) {
+	y := minimal + `inbound:
+  forwards:
+    - { name: mc, port: 25565, to: 192.168.1.50, links: [isp1] }
+    - { name: game, proto: both, port: "27015-27030", to: 192.168.1.51 }
+    - { name: mc-lte, port: 25565, to: 192.168.1.50, to_port: 25570, links: [lte] }
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := cfg.Inbound.Forwards
+	if f[0].Proto != "tcp" || f[0].Port.From != 25565 || len(f[1].Protos()) != 2 || f[1].Port.To != 27030 || f[2].ToPort != 25570 {
+		t.Fatalf("forwards = %+v", f)
+	}
+	if g := cfg.Inbound.Guard; g.NewPerMinute != 20 || g.Burst != 20 || g.MaxConnections != 32 {
+		t.Errorf("guard defaults = %+v", g)
+	}
+	bad := map[string]string{
+		"outside LAN":     "inbound: { forwards: [{ name: x, port: 1, to: 10.0.0.5 }] }\n",
+		"no port":         "inbound: { forwards: [{ name: x, to: 192.168.1.5 }] }\n",
+		"range to_port":   "inbound: { forwards: [{ name: x, port: '10-20', to: 192.168.1.5, to_port: 80 }] }\n",
+		"bad proto":       "inbound: { forwards: [{ name: x, proto: icmp, port: 1, to: 192.168.1.5 }] }\n",
+		"unknown link":    "inbound: { forwards: [{ name: x, port: 1, to: 192.168.1.5, links: [isp9] }] }\n",
+		"duplicate name":  "inbound: { forwards: [{ name: x, port: 1, to: 192.168.1.5 }, { name: x, port: 2, to: 192.168.1.5 }] }\n",
+		"overlap on link": "inbound: { forwards: [{ name: x, port: '10-20', to: 192.168.1.5 }, { name: y, proto: both, port: 15, to: 192.168.1.6, links: [isp1] }] }\n",
+		"zero guard":      "inbound: { guard: { max_connections: -1 } }\n",
+	}
+	for name, extra := range bad {
+		if _, err := Parse([]byte(minimal + extra)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// Тот же порт, но другой протокол или другой канал — не пересечение.
+	ok := "inbound: { forwards: [{ name: x, port: 15, to: 192.168.1.5 }, { name: y, proto: udp, port: 15, to: 192.168.1.6 }] }\n"
+	if _, err := Parse([]byte(minimal + ok)); err != nil {
+		t.Errorf("tcp and udp on one port: %v", err)
+	}
+}
