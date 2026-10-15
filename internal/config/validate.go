@@ -164,6 +164,9 @@ func (c *Config) validateLinks(p *problems) {
 		if l.SQM.DownMbit < 0 || l.SQM.UpMbit < 0 {
 			p.add(f+".sqm", "bandwidth must not be negative")
 		}
+		if err := l.SQM.Params(l.Kind).Validate(); err != nil {
+			p.add(f+".sqm", "%v", err)
+		}
 		if q := l.Quota; q != nil {
 			if q.MonthlyGB <= 0 {
 				p.add(f+".quota.monthly_gb", "must be positive")

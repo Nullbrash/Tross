@@ -45,10 +45,10 @@ monitor:
     urls: ["http://203.0.113.10/bytes?n=200000000"]
 
 classes:
-  - { id: gaming, selector: lowest_latency, stickiness: session, sticky_ttl: 2h, links: [isp1, isp2], fallback: [lte] }
-  - { id: voip, selector: lowest_latency, stickiness: session, sticky_ttl: 2h, links: [isp1, isp2], fallback: [lte] }
-  - { id: streaming, selector: balanced, links: [isp1, isp2], fallback: [lte] }
-  - { id: bulk, selector: balanced, links: [isp1, isp2] }
+  - { id: gaming, selector: lowest_latency, stickiness: session, sticky_ttl: 2h, links: [isp1, isp2], fallback: [lte], priority: high }
+  - { id: voip, selector: lowest_latency, stickiness: session, sticky_ttl: 2h, links: [isp1, isp2], fallback: [lte], priority: high }
+  - { id: streaming, selector: balanced, links: [isp1, isp2], fallback: [lte], priority: video }
+  - { id: bulk, selector: balanced, links: [isp1, isp2], priority: low }
   - { id: default, selector: ordered, links: [isp1, isp2], fallback: [lte] }
 
 # Игра — эхо UDP 9000 стенда; загрузки (торрент) — HTTP «пиров» на TCP 88;

@@ -15,6 +15,7 @@ import (
 	"tross/core/lists"
 	"tross/core/model"
 	"tross/core/profile"
+	"tross/core/sqm"
 )
 
 type Config struct {
@@ -80,11 +81,29 @@ type Link struct {
 	WhitelistDetection *bool `yaml:"whitelist_detection"`
 }
 
-// SQM — CAKE на канале; нулевая скорость — брать из измерений монитора.
+// SQM — CAKE на канале. Скорость очереди = база × процент; база —
+// down_mbit/up_mbit, а при нуле — из замеров (тест скорости, а у LTE —
+// насыщение канала, увиденное по задержке).
 type SQM struct {
 	Enabled  bool `yaml:"enabled"`
 	DownMbit int  `yaml:"down_mbit"`
 	UpMbit   int  `yaml:"up_mbit"`
+	// StartPct, MinPct, MaxPct — процент от базы: начальный и пределы
+	// автоподстройки; по умолчанию 90 и 80–97 (LTE — 50–95).
+	StartPct int `yaml:"start_pct"`
+	MinPct   int `yaml:"min_pct"`
+	MaxPct   int `yaml:"max_pct"`
+	// Auto — подстраивать процент по задержке под нагрузкой; false —
+	// всегда start_pct.
+	Auto *bool `yaml:"auto"`
+}
+
+// Params — настройки очереди канала для core/sqm (после значений по умолчанию).
+func (q SQM) Params(kind model.LinkKind) sqm.Params {
+	p := sqm.ParamsFor(kind)
+	p.Start, p.Min, p.Max = float64(q.StartPct)/100, float64(q.MinPct)/100, float64(q.MaxPct)/100
+	p.Auto = q.Auto == nil || *q.Auto
+	return p
 }
 
 type Quota struct {

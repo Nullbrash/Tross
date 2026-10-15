@@ -433,3 +433,34 @@ func TestLabClassesMatchesLab(t *testing.T) {
 		t.Error("configs/lab-classes.yaml differs from configs/lab.yaml outside classes, classify and inbound")
 	}
 }
+
+func TestSQMPercents(t *testing.T) {
+	y := `
+lan: { interface: br0, networks: [192.168.1.0/24] }
+links:
+  - { id: isp1, kind: wired, interface: eth1 }
+  - { id: lte, kind: lte, interface: eth2, sqm: { min_pct: 40, auto: false } }
+dns: { listen: ["192.168.1.1:53"] }
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, l := cfg.Links[0].SQM.Params(model.LinkKindWired), cfg.Links[1].SQM.Params(model.LinkKindLTE)
+	if w.Start != 0.90 || w.Min != 0.80 || w.Max != 0.97 || !w.Auto {
+		t.Errorf("wired defaults: %+v", w)
+	}
+	if l.Start != 0.90 || l.Min != 0.40 || l.Max != 0.95 || l.Auto {
+		t.Errorf("lte with overrides: %+v", l)
+	}
+	for name, sqm := range map[string]string{
+		"start below min": "{ start_pct: 70 }",
+		"max over 100":    "{ max_pct: 120 }",
+		"min over max":    "{ min_pct: 98, start_pct: 98 }",
+	} {
+		bad := "lan: { interface: br0, networks: [192.168.1.0/24] }\nlinks:\n  - { id: isp1, kind: wired, interface: eth1, sqm: " + sqm + " }\ndns: { listen: [\"192.168.1.1:53\"] }\n"
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

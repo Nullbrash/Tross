@@ -32,10 +32,18 @@ links:
     interface: enp2s0
     gateway: auto                   # auto (из DHCP) или IPv4 шлюза
     priority: 10                    # меньше — предпочтительнее при равенстве
-    sqm:                            # CAKE — этап 3, пока не используется
+    # Очередь CAKE (этап 3, в работе): стоит чуть ниже настоящей скорости
+    # канала, чтобы пакеты копились у нас, а не у провайдера, — тогда пинг
+    # под нагрузкой не растёт и работают приоритеты классов. Скорость
+    # очереди = база × процент.
+    sqm:
       enabled: true
-      down_mbit: 0                  # 0 — брать из измерений, тарифу не доверяем
+      down_mbit: 0                  # база; 0 — из замеров (тарифу не доверяем)
       up_mbit: 0
+      start_pct: 90                 # процент от базы при старте
+      min_pct: 80                   # пределы автоподстройки (у LTE по
+      max_pct: 97                   #   умолчанию 50–95)
+      auto: true                    # подстраивать процент по задержке под нагрузкой
 
   - id: isp2
     name: Провайдер 2
@@ -111,16 +119,18 @@ monitor:
     duration: 10s
     max_bytes: 200000000
 
-# Классы трафика и их политики. Сейчас (этап 1) действует только политика
-# класса default — она распределяет все новые соединения; остальные классы
-# заработают с классификатором (этап 2).
-#   selector:   lowest_latency | best_throughput | balanced | ordered
-#   stickiness: none | session | destination  (+ sticky_ttl)
+# Классы трафика и их политики. Класс соединения определяет классификатор
+# (раздел classify и встроенные профили сервисов), не подошло ничто — default.
+#   selector:   lowest_latency | best_throughput | best_upload | balanced | ordered
+#   stickiness: none | session | destination  (+ sticky_ttl); части сервисов
+#               вроде видео YouTube закрепляются «устройство + сервис» сами
 #   links:      основной пул (пусто — все, кроме fallback)
 #   fallback:   только когда весь основной пул непригоден
 #   канал вне links и fallback при непустом links для класса запрещён
 #   method:     auto (по спискам доменов) | direct | direct_dpi | proxy
-#   priority:   high | normal | low
+#   priority:   корзина очереди CAKE (этап 3): high — голос (впереди всех,
+#               до ~25 % канала) | video — видео (до ~50 %) | normal |
+#               low — фон (при занятом канале ~6 %)
 classes:
   - id: gaming
     name: Игры
@@ -151,7 +161,7 @@ classes:
     fallback: [lte]
     method: auto
     allow_proxy: true
-    priority: normal
+    priority: video
 
   - id: bulk
     name: Фоновые загрузки
@@ -182,7 +192,7 @@ classes:
     links: [isp1, isp2]
     method: auto
     allow_proxy: true
-    priority: normal
+    priority: video
 
   - id: default
     name: Прочее

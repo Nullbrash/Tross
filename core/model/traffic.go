@@ -98,13 +98,15 @@ func (s Stickiness) Valid() bool {
 type Priority string
 
 const (
-	PriorityHigh   Priority = "high"
+	PriorityHigh Priority = "high"
+	// PriorityVideo — видео и свои трансляции: впереди прочего, позади игр.
+	PriorityVideo  Priority = "video"
 	PriorityNormal Priority = "normal"
 	PriorityLow    Priority = "low"
 )
 
 func (p Priority) Valid() bool {
-	return p == PriorityHigh || p == PriorityNormal || p == PriorityLow
+	return p == PriorityHigh || p == PriorityVideo || p == PriorityNormal || p == PriorityLow
 }
 
 // Policy — правила выбора канала и метода для класса трафика.

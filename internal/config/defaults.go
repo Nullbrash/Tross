@@ -7,6 +7,7 @@ import (
 
 	"tross/core/lists"
 	"tross/core/model"
+	"tross/core/sqm"
 )
 
 // LinkMarkMask — биты fwmark, отведённые под номер канала. Прокси получают
@@ -59,6 +60,13 @@ func (c *Config) applyDefaults() {
 		}
 		if l.WhitelistDetection == nil {
 			l.WhitelistDetection = ptr(true)
+		}
+		d := sqm.ParamsFor(l.Kind)
+		orDefault(&l.SQM.StartPct, int(d.Start*100+0.5))
+		orDefault(&l.SQM.MinPct, int(d.Min*100+0.5))
+		orDefault(&l.SQM.MaxPct, int(d.Max*100+0.5))
+		if l.SQM.Auto == nil {
+			l.SQM.Auto = ptr(true)
 		}
 	}
 
