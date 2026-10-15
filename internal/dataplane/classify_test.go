@@ -148,15 +148,16 @@ func TestRenderPlanPinsAndReject(t *testing.T) {
 	got := renderPlan(c, spec.Links, plan)
 	for _, want := range []string{
 		// Закреплённая сессия — на свой канал, мимо выбора.
-		"add rule inet tross cls1 ip saddr @tross_s1_0 meta mark set 0x101 goto commit\n",
-		"add rule inet tross cls1 ip saddr @tross_s1_1 meta mark set 0x201 goto commit\n",
+		// Каждое новое соединение продлевает срок закрепления.
+		"add rule inet tross cls1 ip saddr @tross_s1_0 update @tross_s1_0 { ip saddr } meta mark set 0x101 goto commit\n",
+		"add rule inet tross cls1 ip saddr @tross_s1_1 update @tross_s1_1 { ip saddr } meta mark set 0x201 goto commit\n",
 		// LTE в PinLinks нет — его закрепления очищаются.
 		"flush set inet tross tross_s1_2\n",
 		// Новая сессия: выбор + запоминание.
 		"add rule inet tross cls1 meta mark set 0x101\n",
 		"add rule inet tross cls1 meta mark and 0xff00 == 0x100 update @tross_s1_0 { ip saddr }\n",
 		// Банк — устройство + адрес назначения.
-		"add rule inet tross cls5 ip saddr . ip daddr @tross_s5_0 meta mark set 0x105 goto commit\n",
+		"add rule inet tross cls5 ip saddr . ip daddr @tross_s5_0 update @tross_s5_0 { ip saddr . ip daddr } meta mark set 0x105 goto commit\n",
 		// bulk без пригодных каналов — отказ, а не основная таблица (там мог бы быть LTE).
 		"flush chain inet tross cls4\nadd rule inet tross cls4 meta l4proto tcp reject with tcp reset\nadd rule inet tross cls4 reject\n",
 		// Сервис YouTube — по плану своего класса (streaming).

@@ -4,6 +4,7 @@ package dataplane
 
 import (
 	"context"
+	"maps"
 	"net/netip"
 	"strings"
 	"testing"
@@ -279,6 +280,16 @@ func TestConnectionsAndPinsFromKernel(t *testing.T) {
 			}
 		}
 	}
+	// Соединения к порталу от прошлых тестов ещё в conntrack (time_wait) —
+	// учитываются только новые.
+	before, err := s.Connections(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := map[netip.AddrPort]bool{}
+	for _, c := range before {
+		old[c.Src] = true
+	}
 	if out, err := inClient(t, "wget -q -T 5 --tries=1 -O - http://"+srv+":8080/ | wc -c"); err != nil {
 		t.Fatalf("wget portal: %v %s", err, out)
 	}
@@ -295,7 +306,7 @@ func TestConnectionsAndPinsFromKernel(t *testing.T) {
 		switch {
 		case c.Proto == "udp" && c.Dst.Port() == 9006:
 			game = &conns[i]
-		case c.Proto == "tcp" && c.Dst.Port() == 8080 && c.Class == model.ClassStreaming:
+		case c.Proto == "tcp" && c.Dst.Port() == 8080 && !old[c.Src]:
 			video = &conns[i]
 		}
 	}
@@ -322,4 +333,37 @@ func TestConnectionsAndPinsFromKernel(t *testing.T) {
 	if !sess || !svc {
 		t.Errorf("pins (session %v, service %v): %+v", sess, svc, pins)
 	}
+}
+
+// Срок закрепления отсчитывается от последнего нового соединения: сессия,
+// которая длится дольше срока, но всё время открывает соединения, канал не
+// теряет; затихшая дольше срока — идёт по новому плану.
+func TestSessionPinRefreshedByNewConnections(t *testing.T) {
+	s := newSystem(t)
+	spec := classStand(t)
+	pol := maps.Clone(spec.Classify.Policies)
+	g := pol[model.ClassGaming]
+	g.PinTTL = 3 * time.Second
+	pol[model.ClassGaming] = g
+	spec.Classify.Policies = pol
+	if err := s.Setup(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	gid := spec.Classify.classID(model.ClassGaming)
+	game := func(shares model.LinkID) {
+		setPlan(t, s, decision.ClassPlan{Class: model.ClassGaming, Shares: one(shares), PinLinks: []model.LinkID{"isp1", "isp2"}})
+	}
+	game("isp1")
+	udp(t, "9007", "start")
+	game("isp2")
+	// 6 с новых соединений при сроке 3 с — без продления закрепление
+	// истекло бы на середине и часть соединений ушла бы в isp2.
+	for range 6 {
+		time.Sleep(800 * time.Millisecond)
+		udp(t, "9008", "tick")
+	}
+	onlyMark(t, protoUDP, 9008, 0x100|gid, "session kept alive by new connections")
+	time.Sleep(4 * time.Second)
+	udp(t, "9009", "later")
+	onlyMark(t, protoUDP, 9009, 0x200|gid, "session after idle longer than pin TTL")
 }

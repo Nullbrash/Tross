@@ -391,9 +391,12 @@ func renderPlan(c Classify, links []LinkSpec, plan []decision.ClassPlan) string 
 		pol := c.Policies[cl]
 		fmt.Fprintf(&b, "flush chain inet %s %s\n", nftTable, name)
 		if set != nil {
+			// update продлевает срок: он отсчитывается от последнего нового
+			// соединения устройства, а не от первого (иначе долгая игра или
+			// просмотр теряли бы закрепление посреди сессии).
 			for _, id := range p.PinLinks {
 				if i := idx(id); i >= 0 {
-					fmt.Fprintf(&b, "add rule inet %s %s %s @%s meta mark set %#x goto commit\n", nftTable, name, key, set(i), links[i].FwMark|cid)
+					fmt.Fprintf(&b, "add rule inet %s %s %s @%s update @%s { %s } meta mark set %#x goto commit\n", nftTable, name, key, set(i), set(i), key, links[i].FwMark|cid)
 				}
 			}
 			// Закрепления за каналами вне PinLinks больше не действуют —
