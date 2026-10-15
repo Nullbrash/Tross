@@ -30,7 +30,9 @@ type Options struct {
 	// Connections — снимок размеченных соединений; nil — недоступно.
 	Connections func(ctx context.Context) ([]dataplane.Connection, error)
 	// Explain — «почему так» для соединения; nil — недоступно.
-	Explain         ExplainFunc
+	Explain ExplainFunc
+	// SQM — очереди CAKE каналов (только каналы с SQM); nil — недоступно.
+	SQM             func() map[model.LinkID]SQMStatus
 	AllowedNetworks []netip.Prefix
 	Version         string
 	DryRun          bool
@@ -118,6 +120,22 @@ type linkDTO struct {
 	UpBps      uint64          `json:"up_bps"`
 	UpdatedAt  time.Time       `json:"updated_at,omitzero"`
 	Reason     string          `json:"reason,omitempty"`
+	SQM        *SQMStatus      `json:"sqm,omitempty"`
+}
+
+// SQMDirection — очередь одного направления канала.
+type SQMDirection struct {
+	RateBps uint64  `json:"rate_bps"` // 0 — без ограничения
+	BaseBps uint64  `json:"base_bps"`
+	Basis   string  `json:"basis,omitempty"` // manual | test | passive | restored
+	Pct     float64 `json:"pct"`
+}
+
+// SQMStatus — очереди CAKE канала: скорость = база × процент.
+type SQMStatus struct {
+	Down    SQMDirection `json:"down"`
+	Up      SQMDirection `json:"up"`
+	Testing bool         `json:"testing,omitempty"` // идёт тест скорости — загрузка без ограничения
 }
 
 func toLinkDTO(st model.LinkStatus) linkDTO {
@@ -134,9 +152,17 @@ func toLinkDTO(st model.LinkStatus) linkDTO {
 
 func (s *Server) handleLinks(w http.ResponseWriter, _ *http.Request) {
 	snap := s.opts.Monitor.Snapshot()
+	var sqm map[model.LinkID]SQMStatus
+	if s.opts.SQM != nil {
+		sqm = s.opts.SQM()
+	}
 	out := make([]linkDTO, 0, len(snap))
 	for _, st := range snap {
-		out = append(out, toLinkDTO(st))
+		d := toLinkDTO(st)
+		if q, ok := sqm[st.Link.ID]; ok {
+			d.SQM = &q
+		}
+		out = append(out, d)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"links": out})
 }

@@ -199,3 +199,60 @@ func TestLTEFollowsCapacity(t *testing.T) {
 	}
 	t.Logf("LTE: %s → %s → %s", Mbit(at(299)), Mbit(at(899)), Mbit(at(2399)))
 }
+
+func ms(n int) time.Duration { return time.Duration(n) * time.Millisecond }
+
+// Прирост — по каждой цели от её базы (цели на разном расстоянии), медиана.
+func TestDelayPerTarget(t *testing.T) {
+	var d Delay
+	if _, ok := d.Observe(nil, false); ok {
+		t.Error("no samples must give no delay")
+	}
+	d.Observe(map[string]time.Duration{"msk": ms(5), "sto": ms(30), "fra": ms(40)}, false)
+	got, _ := d.Observe(map[string]time.Duration{"msk": ms(25), "sto": ms(50), "fra": ms(41)}, true)
+	if got != ms(20) {
+		t.Errorf("median delta = %v, want 20ms", got)
+	}
+	// Под нагрузкой база не ползёт: долгая очередь не становится «нормой».
+	for range 500 {
+		d.Observe(map[string]time.Duration{"msk": ms(25), "sto": ms(50), "fra": ms(60)}, true)
+	}
+	if got, _ := d.Observe(map[string]time.Duration{"msk": ms(25), "sto": ms(50), "fra": ms(60)}, true); got != ms(20) {
+		t.Errorf("after long load delta = %v, want still 20ms", got)
+	}
+	// В простое — ползёт к новой задержке (маршрут стал длиннее).
+	for range 300 {
+		d.Observe(map[string]time.Duration{"msk": ms(12), "sto": ms(37), "fra": ms(47)}, false)
+	}
+	if got, _ := d.Observe(map[string]time.Duration{"msk": ms(12), "sto": ms(37), "fra": ms(47)}, false); got > ms(1) {
+		t.Errorf("idle drift: delta %v, want ~0", got)
+	}
+}
+
+func TestRestoreKeepsRateAcrossRestart(t *testing.T) {
+	s := NewShaper(WiredParams(), 0)
+	s.Restore(450 * mbit)
+	if b, basis := s.Base(); basis != BasisRestored || s.Rate() != 450*mbit || b != 500*mbit {
+		t.Errorf("restored: rate %s, base %s %s", Mbit(s.Rate()), Mbit(b), basis)
+	}
+	m := NewShaper(WiredParams(), 100*mbit)
+	if m.Restore(450 * mbit); m.Rate() != 90*mbit {
+		t.Errorf("restore overrode manual base: %s", Mbit(m.Rate()))
+	}
+}
+
+// Без базы задержку, раздутую загрузкой, нельзя приписать отдаче с её
+// подтверждениями: база отдачи в пару Мбит/с урезала бы канал.
+func TestNoBaseBlamesDominantDirection(t *testing.T) {
+	l := link(WiredParams())
+	d, u := l.Observe(Sample{At: t0, DownBps: 180 * mbit, UpBps: 4 * mbit, Delay: 300 * time.Millisecond})
+	if d == "" || u != "" || l.Up.Rate() != 0 {
+		t.Errorf("down %q, up %q, up rate %s — want only download learned", d, u, Mbit(l.Up.Rate()))
+	}
+	// Отдача сама упирается в канал (торрент раздаёт), загрузка уже с
+	// базой и ниже своей очереди — виновата отдача.
+	_, u = l.Observe(Sample{At: t0.Add(30 * time.Second), DownBps: 20 * mbit, UpBps: 45 * mbit, Delay: 300 * time.Millisecond})
+	if u == "" || l.Up.Rate() == 0 {
+		t.Errorf("saturated upload not learned: %q", u)
+	}
+}

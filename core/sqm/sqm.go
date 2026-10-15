@@ -51,7 +51,13 @@ const (
 	BasisManual  Basis = "manual"  // sqm.*_mbit из конфига — замеры её не меняют
 	BasisTest    Basis = "test"    // тест скорости с открытой очередью
 	BasisPassive Basis = "passive" // насыщение канала, увиденное по задержке
+	// BasisRestored — скорость очереди, стоявшая в ядре до запуска демона
+	// (очереди переживают его остановку); ведёт себя как пассивная.
+	BasisRestored Basis = "restored"
 )
+
+// movable — база не из замера и не из конфига: её можно двигать по задержке.
+func (b Basis) movable() bool { return b == BasisPassive || b == BasisRestored }
 
 // Params — настройки одного направления одного канала.
 type Params struct {
@@ -139,6 +145,21 @@ func (l *Link) Observe(x Sample) (down, up string) {
 	d, u := l.Down.load(x.DownBps), l.Up.load(x.UpBps)
 	if x.Delay > l.Down.p.Delay || x.Delay > l.Up.p.Delay {
 		blameDown, blameUp := d >= l.Down.p.Load, u >= l.Up.p.Load
+		if blameDown && blameUp && (l.Down.base == 0 || l.Up.base == 0) {
+			// Без базы «загрузка» неизвестна — заметный трафик похож на
+			// насыщение в обе стороны, хотя отдача при загрузке — одни
+			// подтверждения: их база урезала бы отдачу до пары Мбит/с.
+			// Виновато направление с известной загрузкой, а из неизвестных —
+			// с бо́льшим трафиком; другое разберётся в следующих раундах.
+			switch {
+			case l.Down.base == 0 && l.Up.base == 0:
+				blameDown, blameUp = x.DownBps >= x.UpBps, x.UpBps > x.DownBps
+			case l.Down.base == 0:
+				blameDown = false
+			default:
+				blameUp = false
+			}
+		}
 		if !blameDown && !blameUp {
 			// Ни одно направление не упирается в очередь, а задержка растёт:
 			// канал стал медленнее очереди (или очереди ещё нет) — виновато
@@ -193,6 +214,15 @@ func (s *Shaper) Rate() uint64 {
 func (s *Shaper) Base() (uint64, Basis) { return s.base, s.basis }
 func (s *Shaper) Fraction() float64     { return s.frac }
 
+// Restore — скорость очереди, уже стоящая в ядре: перезапуск демона не
+// должен снимать защиту до новых замеров. Ручная база важнее.
+func (s *Shaper) Restore(rateBps uint64) {
+	if s.basis == BasisManual || rateBps == 0 || s.base != 0 {
+		return
+	}
+	s.base, s.basis = uint64(float64(rateBps)/s.frac), BasisRestored
+}
+
 // SetTested — замер скорости канала с открытой очередью; база из конфига
 // важнее замеров. true — скорость очереди изменилась.
 func (s *Shaper) SetTested(bps uint64) bool {
@@ -202,6 +232,12 @@ func (s *Shaper) SetTested(bps uint64) bool {
 	before := s.Rate()
 	s.base, s.basis = bps, BasisTest
 	return s.Rate() != before
+}
+
+// Busy — канал заметно нагружен (хоть одно направление занимает половину
+// своей очереди): базовая задержка в это время не ползёт вверх.
+func (l *Link) Busy(downBps, upBps uint64) bool {
+	return l.Down.load(downBps) >= 0.5 || l.Up.load(upBps) >= 0.5
 }
 
 // load — доля скорости очереди, занятая трафиком; без ограничения —
@@ -232,13 +268,13 @@ func (s *Shaper) overload(at time.Time, bps uint64, delay time.Duration) string 
 	}
 	rate := s.Rate()
 	switch {
-	case float64(bps) < float64(rate)*s.p.Load && s.basis == BasisPassive:
+	case float64(bps) < float64(rate)*s.p.Load && s.basis.movable():
 		// Канал стал заметно медленнее очереди (у LTE так бывает): шагами
 		// процента не догнать — прошедший трафик и есть новая скорость.
 		s.base = bps
 	case s.frac > s.p.Min:
 		s.frac = max(s.frac-s.p.StepDown, s.p.Min)
-	case s.basis == BasisPassive:
+	case s.basis.movable():
 		s.base = max(uint64(float64(s.base)*(1-s.p.StepDown)), s.p.MinRate)
 	default:
 		// База из теста или конфига, процент уже на пределе — дальше
@@ -258,7 +294,7 @@ func (s *Shaper) headroom(at time.Time, load float64) string {
 	switch {
 	case s.frac < s.p.Max:
 		s.frac = min(s.frac+s.p.StepUp, s.p.Max)
-	case s.basis == BasisPassive:
+	case s.basis.movable():
 		// Пассивная оценка — «не меньше чем»: канал тянет больше.
 		s.base = uint64(float64(s.base) * s.p.BaseGrow)
 	default:

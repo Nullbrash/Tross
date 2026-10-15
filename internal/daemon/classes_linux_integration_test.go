@@ -6,6 +6,7 @@ package daemon
 
 import (
 	"bytes"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -309,4 +310,81 @@ func TestPortForwardThroughBothLinks(t *testing.T) {
 	if !via["isp1"] || !via["isp2"] {
 		t.Errorf("inbound forwarded connections by link: %v — want isp1 and isp2", via)
 	}
+}
+
+// Очереди сквозь демон: isp1 «у провайдера» — 200/50 Мбит/с с большим
+// буфером (netem стенда — до ~0,6 с очереди). Под загрузкой демон сам находит скорость канала по росту
+// задержки (без настроек и тестов) и ставит очередь ниже неё; тест скорости
+// по команде — база из замера (на время теста ограничение снято).
+func TestSQMLearnsLinkSpeed(t *testing.T) {
+	cfg := classCfg(t)
+	for i := range cfg.Links {
+		cfg.Links[i].SQM.Enabled = cfg.Links[i].ID == "isp1"
+	}
+	lab(t, "shape", "isp1", "8", "1", "0", "200", "50")
+	t.Cleanup(func() { lab(t, "shape", "isp1", "8", "1", "0", "0", "0") })
+	startDaemon(t, cfg)
+	type dir struct {
+		RateBps uint64 `json:"rate_bps"`
+		BaseBps uint64 `json:"base_bps"`
+		Basis   string `json:"basis"`
+	}
+	sqmOf := func() (d, u dir) {
+		var resp struct {
+			Links []struct {
+				ID  string
+				SQM *struct{ Down, Up dir }
+			}
+		}
+		getJSON(t, "http://"+cfg.API.Listen+"/api/links", &resp)
+		for _, l := range resp.Links {
+			if l.ID == "isp1" && l.SQM != nil {
+				return l.SQM.Down, l.SQM.Up
+			}
+		}
+		t.Fatal("isp1 has no sqm in /api/links")
+		return
+	}
+	if d, _ := sqmOf(); d.RateBps != 0 {
+		t.Fatalf("before any load the queue must be unlimited: %+v", d)
+	}
+	load := exec.Command("ip", "netns", "exec", "tl-client", labsrvBin(t), "load",
+		"-url", "http://"+benchSrv, "-down", "4", "-duration", "40s")
+	if err := load.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = load.Process.Kill(); _ = load.Wait() })
+	took := until(t, 40*time.Second, "passive base from saturation", func() bool {
+		d, _ := sqmOf()
+		return d.Basis == "passive" && d.RateBps > 0
+	})
+	d, u := sqmOf()
+	t.Logf("measure: download queue learned in %v: rate %d, base %d; upload rate %d (%s)", took.Round(100*time.Millisecond), d.RateBps, d.BaseBps, u.RateBps, u.Basis)
+	// Отдача при загрузке — подтверждения: её очередь не должна получить
+	// их скорость базой (урезала бы отдачу до пары Мбит/с).
+	if u.RateBps != 0 && u.RateBps < 30_000_000 {
+		t.Errorf("upload queue cut to %d bit/s by the download's delay", u.RateBps)
+	}
+	if d.RateBps > 200_000_000 || d.RateBps < 120_000_000 {
+		t.Errorf("learned queue %d bit/s — want below the 200 Mbit/s link", d.RateBps)
+	}
+	var links struct{ Links []struct{ ID, State string } }
+	getJSON(t, "http://"+cfg.API.Listen+"/api/links", &links)
+	for _, l := range links.Links {
+		if l.ID == "isp1" && l.State != "up" && l.State != "degraded" {
+			t.Errorf("isp1 under load went %s — the queue must keep it usable", l.State)
+		}
+	}
+	_ = load.Process.Kill()
+	_ = load.Wait()
+
+	resp, err := http.Post("http://"+cfg.API.Listen+"/api/links/isp1/speedtest", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if d, _ = sqmOf(); d.Basis != "test" || d.BaseBps < 160_000_000 || d.BaseBps > 210_000_000 {
+		t.Errorf("after speed test: %+v — want base from the test ≈ 200 Mbit/s", d)
+	}
+	t.Logf("measure: after speed test: rate %d, base %d", d.RateBps, d.BaseBps)
 }

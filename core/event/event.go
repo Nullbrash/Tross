@@ -17,7 +17,36 @@ const (
 	TopicLinkState   Topic = "link.state"
 	TopicDeviceNew   Topic = "device.new"
 	TopicDNSWatchdog Topic = "dns.watchdog"
+	// TopicLinkRound — каждый раунд проб монитора (данные — LinkRound):
+	// живой сигнал для очередей CAKE; в журнал и историю не пишется.
+	TopicLinkRound Topic = "link.round"
+	// TopicSQM — смена скорости очередей канала (данные — SQMChange).
+	TopicSQM Topic = "sqm"
 )
+
+// JournalTopics — темы, которые пишутся в журнал и историю событий:
+// всё, кроме частых служебных (раунды проб).
+func JournalTopics() []Topic {
+	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDNSWatchdog, TopicSQM}
+}
+
+// LinkRound — данные события TopicLinkRound.
+type LinkRound struct {
+	Link model.LinkID `json:"link"`
+	// DownBps, UpBps — трафик интерфейса канала с прошлого раунда.
+	DownBps uint64 `json:"down_bps"`
+	UpBps   uint64 `json:"up_bps"`
+	// RTTs — задержка по целям в этом раунде (ответившие).
+	RTTs map[string]time.Duration `json:"rtts"`
+}
+
+// SQMChange — данные события TopicSQM.
+type SQMChange struct {
+	Link    model.LinkID `json:"link"`
+	DownBps uint64       `json:"down_bps"` // 0 — без ограничения
+	UpBps   uint64       `json:"up_bps"`
+	Reason  string       `json:"reason"`
+}
 
 type Event struct {
 	Topic Topic     `json:"topic"`

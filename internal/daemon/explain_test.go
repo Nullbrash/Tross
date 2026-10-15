@@ -79,7 +79,7 @@ func TestExplainNewGameSession(t *testing.T) {
 	if ex.Classification.Class != model.ClassGaming || len(p.Shares) != 1 || ex.Link != p.Shares[0].Link {
 		t.Fatalf("explain = %+v, plan %+v", ex, p)
 	}
-	if ex.Pin != nil || !strings.Contains(ex.Reason, "new session pin") || ex.Method != model.MethodDirect {
+	if ex.Pin != nil || !strings.Contains(ex.Reason, "new session pin") || ex.Method != model.MethodDirect || ex.Tin != "voice" {
 		t.Errorf("explain = %+v", ex)
 	}
 }

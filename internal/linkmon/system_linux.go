@@ -205,7 +205,7 @@ func (s *System) round(ctx context.Context, l *link) {
 	prev, _, _ := l.tracker.State()
 	m, changed := l.tracker.Observe(r)
 	state, since, reason := l.tracker.State()
-	down, up := s.passiveLocked(l, now)
+	down, up, curDown, curUp := s.passiveLocked(l, now)
 	l.health = model.LinkHealth{
 		LinkID: l.probe.Link.ID, State: state, StateSince: since,
 		RTT: m.RTT, Jitter: m.Jitter, Loss: m.Loss,
@@ -226,6 +226,12 @@ func (s *System) round(ctx context.Context, l *link) {
 	if changed {
 		s.publish(l, now, prev, state, reason)
 	}
+	rtts := make(map[string]time.Duration, len(r.RTTs))
+	for _, x := range r.RTTs {
+		rtts[x.Target] = x.RTT
+	}
+	s.opts.Bus.Publish(event.Event{Topic: event.TopicLinkRound, Time: now,
+		Data: event.LinkRound{Link: l.probe.Link.ID, DownBps: curDown, UpBps: curUp, RTTs: rtts}})
 	if due {
 		go func() {
 			th, err := s.SpeedTest(ctx, l.probe.Link.ID)
@@ -333,21 +339,25 @@ func (s *System) linkHTTPClient(l *link, timeout time.Duration) *http.Client {
 	}
 }
 
-// passiveLocked — скорость по счётчикам интерфейса между раундами.
-func (s *System) passiveLocked(l *link, now time.Time) (down, up uint64) {
+// passiveLocked — скорость по счётчикам интерфейса между раундами:
+// пиковая за сутки и текущая (с прошлого раунда).
+func (s *System) passiveLocked(l *link, now time.Time) (down, up, curDown, curUp uint64) {
 	nl, err := netlink.LinkByName(l.probe.Link.Interface)
 	if err != nil || nl.Attrs().Statistics == nil {
-		return l.peak.Peak(now)
+		down, up = l.peak.Peak(now)
+		return down, up, 0, 0
 	}
 	st := nl.Attrs().Statistics
 	if !l.lastAt.IsZero() && st.RxBytes >= l.lastRx && st.TxBytes >= l.lastTx {
 		dt := now.Sub(l.lastAt).Seconds()
 		if dt > 0 {
-			l.peak.Add(now, uint64(float64(st.RxBytes-l.lastRx)*8/dt), uint64(float64(st.TxBytes-l.lastTx)*8/dt))
+			curDown, curUp = uint64(float64(st.RxBytes-l.lastRx)*8/dt), uint64(float64(st.TxBytes-l.lastTx)*8/dt)
+			l.peak.Add(now, curDown, curUp)
 		}
 	}
 	l.lastRx, l.lastTx, l.lastAt = st.RxBytes, st.TxBytes, now
-	return l.peak.Peak(now)
+	down, up = l.peak.Peak(now)
+	return down, up, curDown, curUp
 }
 
 func (s *System) tcpProbe(ctx context.Context, l *link, dst netip.AddrPort) (time.Duration, bool) {
@@ -395,7 +405,7 @@ func (s *System) Status(id model.LinkID) (model.LinkStatus, bool) {
 // ProbeBytes — сколько байт проб отправлено и получено с запуска.
 func (s *System) ProbeBytes() uint64 { return s.probeBytes.Load() }
 
-func (s *System) SpeedTest(ctx context.Context, id model.LinkID) (model.Throughput, error) {
+func (s *System) SpeedTest(ctx context.Context, id model.LinkID) (th model.Throughput, err error) {
 	l := s.find(id)
 	if l == nil {
 		return model.Throughput{}, fmt.Errorf("unknown link %q", id)
@@ -404,6 +414,10 @@ func (s *System) SpeedTest(ctx context.Context, id model.LinkID) (model.Throughp
 		return model.Throughput{}, fmt.Errorf("speed test on %s is already running", id)
 	}
 	defer l.testing.Store(false)
+	if s.opts.SpeedTestHook != nil {
+		done := s.opts.SpeedTestHook(id)
+		defer func() { done(th, err) }()
+	}
 
 	o := s.opts.SpeedTest
 	ctx, cancel := context.WithTimeout(ctx, o.Duration+10*time.Second)
@@ -417,7 +431,6 @@ func (s *System) SpeedTest(ctx context.Context, id model.LinkID) (model.Throughp
 	defer tr.CloseIdleConnections()
 	client := &http.Client{Transport: tr}
 
-	var th model.Throughput
 	var lastErr error
 	for _, url := range o.URLs {
 		var total atomic.Int64

@@ -80,7 +80,9 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}()
 
-	mon, err := newMonitor(cfg, log, bus)
+	sqmc := newSQMController(cfg, log, dp, bus)
+	sqmc.start(ctx)
+	mon, err := newMonitor(cfg, log, bus, sqmc.speedTestHook)
 	if err != nil {
 		return err
 	}
@@ -108,6 +110,7 @@ func Run(ctx context.Context, opts Options) error {
 			EventDrops:      bus.Dropped,
 			Connections:     dp.Connections,
 			Explain:         expl.explain,
+			SQM:             sqmc.status,
 			AllowedNetworks: cfg.API.AllowedNetworks,
 			Version:         opts.Version,
 			DryRun:          cfg.Daemon.DryRun,
@@ -126,8 +129,11 @@ func Run(ctx context.Context, opts Options) error {
 	var wg sync.WaitGroup
 	fatal := make(chan error, 2)
 
-	events, unsubscribe := bus.Subscribe(256)
+	events, unsubscribe := bus.Subscribe(256, event.JournalTopics()...)
 	wg.Go(func() { logEvents(log, st, events) })
+	// Раунды монитора — только очередям: частые, в журнал не идут.
+	rounds, unsubscribeRounds := bus.Subscribe(64, event.TopicLinkRound)
+	wg.Go(func() { sqmc.run(runCtx, rounds) })
 	// Подписка до запуска монитора: первые смены состояний не теряются.
 	linkEvents, unsubscribeLinks := bus.Subscribe(64, event.TopicLinkState)
 	wg.Go(func() { bal.run(runCtx, linkEvents) })
@@ -171,6 +177,7 @@ func Run(ctx context.Context, opts Options) error {
 	cancel()
 	unsubscribe()
 	unsubscribeLinks()
+	unsubscribeRounds()
 	wg.Wait()
 	log.Info("trossd stopped")
 	return runErr
@@ -223,7 +230,7 @@ func newDataplane(cfg *config.Config, log *slog.Logger) (dataplane.Dataplane, er
 	return dataplane.NewSystem(log)
 }
 
-func newMonitor(cfg *config.Config, log *slog.Logger, bus event.EventBus) (linkmon.LinkMonitor, error) {
+func newMonitor(cfg *config.Config, log *slog.Logger, bus event.EventBus, speedTestHook func(model.LinkID) func(model.Throughput, error)) (linkmon.LinkMonitor, error) {
 	if cfg.Daemon.DryRun {
 		return linkmon.NewFake(cfg.ModelLinks(), bus, cfg.Monitor.Interval, uint64(time.Now().UnixNano())), nil
 	}
@@ -239,8 +246,9 @@ func newMonitor(cfg *config.Config, log *slog.Logger, bus event.EventBus) (linkm
 	}
 	return linkmon.NewSystem(linkmon.Options{
 		Log: log, Bus: bus, Interval: m.Interval, Timeout: m.Timeout, Params: params, TCPTargets: m.TCPTargets,
-		HTTPCheck: httpCheckOptions(m.HTTPCheck),
-		SpeedTest: linkmon.SpeedTestOptions{URLs: m.SpeedTest.URLs, Hour: hh, Minute: mm, Duration: m.SpeedTest.Duration, MaxBytes: m.SpeedTest.MaxBytes},
+		HTTPCheck:     httpCheckOptions(m.HTTPCheck),
+		SpeedTest:     linkmon.SpeedTestOptions{URLs: m.SpeedTest.URLs, Hour: hh, Minute: mm, Duration: m.SpeedTest.Duration, MaxBytes: m.SpeedTest.MaxBytes},
+		SpeedTestHook: speedTestHook,
 	}, probes)
 }
 

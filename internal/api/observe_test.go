@@ -10,15 +10,18 @@ import (
 	"testing"
 	"time"
 
+	"tross/core/event"
 	"tross/core/model"
+	"tross/core/sqm"
 	"tross/internal/dataplane"
+	"tross/internal/linkmon"
 )
 
 func observeServer(t *testing.T, got *model.Flow) http.Handler {
 	t.Helper()
 	conns := []dataplane.Connection{
 		{Proto: "tcp", Src: netip.MustParseAddrPort("192.168.1.20:50000"), Dst: netip.MustParseAddrPort("198.51.100.9:443"), Link: "isp1", Class: model.ClassStreaming, State: "established", Timeout: time.Hour, Bytes: 900},
-		{Proto: "udp", Src: netip.MustParseAddrPort("192.168.1.20:50001"), Dst: netip.MustParseAddrPort("203.0.113.7:27015"), Link: "isp2", Class: model.ClassGaming, Timeout: time.Minute, Bytes: 5000},
+		{Proto: "udp", Src: netip.MustParseAddrPort("192.168.1.20:50001"), Dst: netip.MustParseAddrPort("203.0.113.7:27015"), Link: "isp2", Class: model.ClassGaming, Tin: sqm.TinVoice, Timeout: time.Minute, Bytes: 5000},
 		{Proto: "tcp", Src: netip.MustParseAddrPort("192.168.1.21:50002"), Dst: netip.MustParseAddrPort("198.51.100.9:443"), Link: "isp1", Class: model.ClassStreaming, Bytes: 10},
 	}
 	return New(Options{
@@ -45,7 +48,7 @@ func TestConnections(t *testing.T) {
 		t.Fatalf("code %d: %s", rec.Code, rec.Body)
 	}
 	// Сводка — по всем, список — самые объёмные до limit.
-	if resp.Total != 3 || resp.ByLink["isp1"] != 2 || resp.ByClass[model.ClassGaming] != 1 || len(resp.Connections) != 1 || resp.Connections[0].Bytes != 5000 || resp.Connections[0].TimeoutS != 60 {
+	if resp.Total != 3 || resp.ByLink["isp1"] != 2 || resp.ByClass[model.ClassGaming] != 1 || len(resp.Connections) != 1 || resp.Connections[0].Bytes != 5000 || resp.Connections[0].TimeoutS != 60 || resp.Connections[0].Tin != "voice" {
 		t.Errorf("resp = %+v", resp)
 	}
 	resp = struct {
@@ -102,5 +105,33 @@ func TestObserveUnavailable(t *testing.T) {
 		if rec := do(h, "GET", p, "127.0.0.1:1"); rec.Code != http.StatusNotImplemented {
 			t.Errorf("%s: code %d", p, rec.Code)
 		}
+	}
+}
+
+// Очереди каналов — в /api/links: только у каналов с SQM.
+func TestLinksShowSQM(t *testing.T) {
+	h := New(Options{
+		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Monitor:         linkmon.NewFake([]model.Link{{ID: "isp1", Kind: model.LinkKindWired}, {ID: "lte", Kind: model.LinkKindLTE}}, event.NewBus(), time.Second, 1),
+		AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
+		SQM: func() map[model.LinkID]SQMStatus {
+			return map[model.LinkID]SQMStatus{"isp1": {Down: SQMDirection{RateBps: 450_000_000, BaseBps: 500_000_000, Basis: "test", Pct: 90}}}
+		},
+	}).Handler()
+	var resp struct {
+		Links []struct {
+			ID  string
+			SQM *SQMStatus
+		}
+	}
+	rec := do(h, "GET", "/api/links", "127.0.0.1:1")
+	if json.Unmarshal(rec.Body.Bytes(), &resp) != nil || len(resp.Links) != 2 {
+		t.Fatalf("links: %s", rec.Body)
+	}
+	if q := resp.Links[0].SQM; q == nil || q.Down.RateBps != 450_000_000 || q.Down.Basis != "test" {
+		t.Errorf("isp1 sqm = %+v", q)
+	}
+	if resp.Links[1].SQM != nil {
+		t.Errorf("lte without sqm shows %+v", resp.Links[1].SQM)
 	}
 }

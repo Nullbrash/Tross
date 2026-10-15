@@ -58,6 +58,10 @@ type Options struct {
 	TCPTargets []netip.AddrPort
 	HTTPCheck  HTTPCheckOptions
 	SpeedTest  SpeedTestOptions
+	// SpeedTestHook вызывается перед активным замером канала; возвращённая
+	// функция — после него с результатом. Очереди CAKE на это время снимают
+	// ограничение, иначе тест измерил бы саму очередь, а не канал. nil — нет.
+	SpeedTestHook func(id model.LinkID) func(model.Throughput, error)
 }
 
 // activeValidFor — сколько учитывается результат активного замера.

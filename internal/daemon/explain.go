@@ -13,6 +13,7 @@ import (
 	"tross/core/decision"
 	"tross/core/model"
 	"tross/core/profile"
+	"tross/core/sqm"
 	"tross/internal/api"
 	"tross/internal/config"
 	"tross/internal/dataplane"
@@ -55,6 +56,7 @@ func (x *explainer) explain(ctx context.Context, f model.Flow) (api.Explanation,
 		pol = x.policies[model.ClassDefault]
 		ex.Notes = append(ex.Notes, fmt.Sprintf("no policy for class %s: default policy applies", c.Class))
 	}
+	ex.Tin = sqm.TinFor(pol.Priority).String()
 
 	var plan *decision.ClassPlan
 	for _, p := range x.plan() {

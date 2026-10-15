@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"tross/core/model"
+	"tross/core/sqm"
 )
 
 // Connection — соединение из conntrack, размеченное Tross.
@@ -23,6 +24,8 @@ type Connection struct {
 	Class model.TrafficClass
 	// Forward — устройство и порт, куда проброшено входящее соединение (DNAT).
 	Forward netip.AddrPort
+	// Tin — корзина CAKE из метки; TinNone — по DSCP (входящие, свой трафик).
+	Tin     sqm.Tin
 	State   string
 	Timeout time.Duration
 	// Packets и Bytes — в обе стороны; нули — учёт conntrack выключен
@@ -42,6 +45,9 @@ type Pin struct {
 	Link    model.LinkID
 	Expires time.Duration
 }
+
+// tinOf — корзина CAKE в метке соединения.
+func tinOf(mark uint32) sqm.Tin { return sqm.Tin((mark & TinMarkMask) >> tinShift) }
 
 // decodeMark — канал и класс по метке соединения (см. LinkMarkMask, classMarkMask).
 func decodeMark(spec Spec, mark uint32) (model.LinkID, model.TrafficClass) {

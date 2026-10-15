@@ -458,6 +458,7 @@ func (s *System) Connections(context.Context) ([]Connection, error) {
 			Bytes:   f.CountersOrig.Bytes + f.CountersReply.Bytes,
 		}
 		cn.Link, cn.Class = decodeMark(spec, f.Mark)
+		cn.Tin = tinOf(f.Mark)
 		if f.ProtoInfo.TCP != nil {
 			cn.State = tcpState(f.ProtoInfo.TCP.State)
 		}

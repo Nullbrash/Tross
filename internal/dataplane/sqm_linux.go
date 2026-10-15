@@ -114,6 +114,18 @@ func (s *System) unshapeLocked(ctx context.Context, i int, l LinkSpec) error {
 	return nil
 }
 
+func (s *System) CurrentShaping() []Shaping {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Shaping
+	for _, l := range s.spec.Links {
+		if sh, ok := s.shaping[l.Link.ID]; ok {
+			out = append(out, sh)
+		}
+	}
+	return out
+}
+
 func (s *System) SetShaping(ctx context.Context, shaping []Shaping) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

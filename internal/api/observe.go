@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"tross/core/model"
+	"tross/core/sqm"
 	"tross/internal/dataplane"
 )
 
@@ -26,15 +27,24 @@ type connDTO struct {
 	Link     model.LinkID       `json:"link,omitempty"`
 	Class    model.TrafficClass `json:"class,omitempty"`
 	Forward  netip.AddrPort     `json:"forward,omitzero"`
+	Tin      string             `json:"tin,omitempty"`
 	State    string             `json:"state,omitempty"`
 	TimeoutS int64              `json:"timeout_s"`
 	Packets  uint64             `json:"packets"`
 	Bytes    uint64             `json:"bytes"`
 }
 
+// tinName — корзина для API; без корзины — пусто (CAKE решает по DSCP).
+func tinName(t sqm.Tin) string {
+	if t == sqm.TinNone {
+		return ""
+	}
+	return t.String()
+}
+
 func toConnDTO(c dataplane.Connection) connDTO {
 	return connDTO{
-		Proto: c.Proto, Src: c.Src, Dst: c.Dst, Link: c.Link, Class: c.Class, Forward: c.Forward, State: c.State,
+		Proto: c.Proto, Src: c.Src, Dst: c.Dst, Link: c.Link, Class: c.Class, Forward: c.Forward, Tin: tinName(c.Tin), State: c.State,
 		TimeoutS: int64(c.Timeout.Seconds()), Packets: c.Packets, Bytes: c.Bytes,
 	}
 }
@@ -101,7 +111,9 @@ type Explanation struct {
 	// при нескольких долях выбор делает ядро по хешу адресов.
 	Link   model.LinkID `json:"link,omitempty"`
 	Method model.Method `json:"method,omitempty"`
-	Reason string       `json:"reason"`
+	// Tin — корзина очереди CAKE класса (голос, видео, обычное, фон).
+	Tin    string `json:"tin,omitempty"`
+	Reason string `json:"reason"`
 	// Existing — уже открытые соединения этого устройства к тому же адресу.
 	Existing []connDTO `json:"existing"`
 	// Notes — какие входные данные ядро учтёт, а какие нет.

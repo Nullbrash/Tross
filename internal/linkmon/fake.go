@@ -73,6 +73,7 @@ func (f *Fake) ForceState(id model.LinkID, s model.LinkState) {
 func (f *Fake) Tick() {
 	now := f.now()
 	var changes []event.LinkStateChange
+	var rounds []event.LinkRound
 
 	f.mu.Lock()
 	for i, l := range f.links {
@@ -92,11 +93,21 @@ func (f *Fake) Tick() {
 			changes = append(changes, event.LinkStateChange{Link: l.ID, From: prev.State, To: state, Reason: "fake monitor"})
 		}
 		f.health[l.ID] = h
+		r := event.LinkRound{Link: l.ID,
+			DownBps: uint64(float64(h.RxBytes-prev.RxBytes) * 8 / f.interval.Seconds()),
+			UpBps:   uint64(float64(h.TxBytes-prev.TxBytes) * 8 / f.interval.Seconds())}
+		if state.Usable() {
+			r.RTTs = map[string]time.Duration{"fake": h.RTT}
+		}
+		rounds = append(rounds, r)
 	}
 	f.mu.Unlock()
 
 	for _, c := range changes {
 		f.bus.Publish(event.Event{Topic: event.TopicLinkState, Time: now, Data: c})
+	}
+	for _, r := range rounds {
+		f.bus.Publish(event.Event{Topic: event.TopicLinkRound, Time: now, Data: r})
 	}
 }
 

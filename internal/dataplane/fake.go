@@ -14,11 +14,12 @@ import (
 
 // Fake ничего не меняет в системе: только записывает и логирует вызовы.
 type Fake struct {
-	log   *slog.Logger
-	mu    sync.Mutex
-	ops   []string
-	conns []Connection
-	pins  []Pin
+	log     *slog.Logger
+	mu      sync.Mutex
+	ops     []string
+	conns   []Connection
+	pins    []Pin
+	shaping map[model.LinkID]Shaping
 }
 
 var _ Dataplane = (*Fake)(nil)
@@ -100,10 +101,28 @@ func (f *Fake) Connections(context.Context) ([]Connection, error) {
 }
 
 func (f *Fake) SetShaping(_ context.Context, shaping []Shaping) error {
+	f.mu.Lock()
+	if f.shaping == nil {
+		f.shaping = map[model.LinkID]Shaping{}
+	}
+	for _, sh := range shaping {
+		f.shaping[sh.Link] = sh
+	}
+	f.mu.Unlock()
 	for _, sh := range shaping {
 		f.record("set-shaping", sh.Link, sh.DownBps, sh.UpBps)
 	}
 	return nil
+}
+
+func (f *Fake) CurrentShaping() []Shaping {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Shaping
+	for _, sh := range f.shaping {
+		out = append(out, sh)
+	}
+	return out
 }
 
 func (f *Fake) Pins(context.Context) ([]Pin, error) {

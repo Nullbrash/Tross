@@ -78,4 +78,7 @@ type Dataplane interface {
 	// SetShaping задаёт скорость очередей CAKE каналов (0 — без
 	// ограничения); каналы без SQM пропускаются. Очередь не сбрасывается.
 	SetShaping(ctx context.Context, shaping []Shaping) error
+	// CurrentShaping — скорости очередей каналов с SQM, как они стоят в ядре
+	// (после Setup — в том числе оставшиеся от прошлого запуска).
+	CurrentShaping() []Shaping
 }
