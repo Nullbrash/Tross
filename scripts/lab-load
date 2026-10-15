@@ -4,7 +4,13 @@
 # через isp1) и с демоном. Запуск на стенде от обычного пользователя (sudo без
 # пароля); стенд поднимается с нуля и в конце снимается.
 #
-#   scripts/lab-load [секунд на сценарий=60] [bare|daemon|both=both] [сценарии...]
+#   scripts/lab-load [секунд на сценарий=60] [bare|daemon|classes|both=both] [сценарии...]
+#
+# classes — демон с классами Этапа 2 (configs/lab-classes.yaml): игра —
+# класс gaming, торрент (TCP 88) — bulk, прочее — default; доменные
+# множества перед сценариями наполняются SET_FILL адресами каждое (по
+# умолчанию 2000) — как наполнит их резолвер; цена — в classes-sets.txt.
+# Режимы можно перечислить: "daemon classes".
 #
 # Сценарии: idle game torrent steam stream all torrent-user torrent-max
 # all-user (= torrent-user + steam + stream). Во всех, кроме idle, идёт
@@ -68,6 +74,34 @@ S "$lab" up >/dev/null
 S "$lab" offload off >/dev/null
 S "$lab" shape isp1 8 1 0 500 500 >/dev/null
 
+# fill_sets N — в каждое доменное множество (наполнит резолвер, этап 4) по N
+# адресов из 100.100.0.0/14 (на стенде не встречаются): время загрузки и
+# сколько памяти ядра это заняло.
+fill_sets() {
+	local n=$1 f=$out/classes-fill.nft sets i=0 m0 m1 t0 t1
+	sets=$(S ip netns exec tl-tross nft list sets inet tross | awk '$1 == "set" && $2 ~ /^tross_(dp|du|lm|la)_/ {print $2}')
+	: >"$f"
+	for s in $sets; do
+		awk -v s="$s" -v n="$n" -v base=$((i * n)) 'BEGIN {
+			line = ""
+			for (j = 0; j < n; j++) {
+				k = base + j
+				line = line (line == "" ? "" : ", ") sprintf("100.%d.%d.%d timeout 1h", 100 + int(k / 65536), int(k / 256) % 256, k % 256)
+				if ((j + 1) % 1000 == 0 || j == n - 1) { print "add element inet tross " s " { " line " }"; line = "" }
+			}
+		}' >>"$f"
+		i=$((i + 1))
+	done
+	sync; S sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+	m0=$(awk '/^MemAvailable/ {print $2}' /proc/meminfo)
+	t0=$(date +%s%N)
+	S ip netns exec tl-tross nft -f "$f"
+	t1=$(date +%s%N)
+	sleep 2
+	m1=$(awk '/^MemAvailable/ {print $2}' /proc/meminfo)
+	echo "domain sets: $i x $n addresses = $((i * n)); nft load $(((t1 - t0) / 1000000)) ms; MemAvailable $m0 -> $m1 kB (-$((m0 - m1)) kB)" | tee "$out/classes-sets.txt"
+}
+
 run_scenario() {
 	local mode=$1 sc=$2 dir=$out/$1-$2 pids=()
 	rm -rf "$dir"
@@ -85,8 +119,11 @@ run_scenario() {
 	*) loads=("$sc") ;;
 	esac
 	for k in "${loads[@]}"; do
+		local url=$srv
+		# С классами торрент — на TCP 88 «пиров»: его правило в lab-classes.yaml.
+		if [ "$mode" = classes ] && [ "$k" = torrent ]; then url=$srv:88; fi
 		# shellcheck disable=SC2086
-		client "$bin/labsrv" load -url "$srv" ${LOAD[$k]} -duration "${dur}s" >"$dir/load-$k.txt" 2>&1 &
+		client "$bin/labsrv" load -url "$url" ${LOAD[$k]} -duration "${dur}s" >"$dir/load-$k.txt" 2>&1 &
 		pids+=($!)
 	done
 	if [ "$sc" != idle ]; then
@@ -105,27 +142,30 @@ for mode in $modes; do
 	bare)
 		S "$lab" simple-route isp1 >/dev/null
 		;;
-	daemon)
+	daemon | classes)
 		S "$lab" simple-route off >/dev/null
 		S rm -rf "$out/data"
-		S ip netns exec tl-tross "$bin/trossd" -config configs/lab.yaml -data-dir "$out/data" >"$out/trossd.log" 2>&1 &
+		cfg=configs/lab.yaml
+		if [ "$mode" = classes ]; then cfg=configs/lab-classes.yaml; fi
+		S ip netns exec tl-tross "$bin/trossd" -config "$cfg" -data-dir "$out/data" >"$out/trossd-$mode.log" 2>&1 &
 		for _ in $(seq 1 60); do
 			S ip netns exec tl-tross wget -qO- "$api/api/links" 2>/dev/null | grep -q '"id":"isp1"[^}]*"state":"up"' && break
 			sleep 1
 		done
 		S ip netns exec tl-tross wget -qO- "$api/api/links" | grep -q '"id":"isp1"[^}]*"state":"up"' || { echo "daemon did not bring isp1 up"; exit 1; }
+		if [ "$mode" = classes ]; then fill_sets "${SET_FILL:-2000}"; fi
 		;;
 	*) echo "unknown mode $mode"; exit 2 ;;
 	esac
 	for sc in "${scenarios[@]}"; do run_scenario "$mode" "$sc"; done
-	if [ "$mode" = daemon ]; then
+	if [ "$mode" != bare ]; then
 		mkdir -p "$out/daemon-api"
 		for p in metrics events "system/stats?res=minute" "links/isp1/stats?res=minute" "logs?level=warn"; do
-			S ip netns exec tl-tross wget -qO- "$api/api/$p" >"$out/daemon-api/$(echo "$p" | tr '/?=&' '____').json" || true
+			S ip netns exec tl-tross wget -qO- "$api/api/$p" >"$out/daemon-api/$mode-$(echo "$p" | tr '/?=&' '____').json" || true
 		done
 		S pkill -INT -x trossd || true
 		sleep 2
-		S ls -l "$out/data" >"$out/daemon-api/data-dir.txt"
+		S ls -l "$out/data" >"$out/daemon-api/$mode-data-dir.txt"
 	fi
 done
 

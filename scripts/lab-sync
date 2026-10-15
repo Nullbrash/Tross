@@ -5,7 +5,8 @@
 #   scripts/lab-sync            только копирование
 #   scripts/lab-sync build      + go build ./cmd/... в ~/tross/bin
 #   scripts/lab-sync test       + build + go test ./...
-#   scripts/lab-sync itest [N]  + build + интеграционные тесты на стенде (N прогонов)
+#   scripts/lab-sync itest [N] [флаги теста]  + build + интеграционные тесты на
+#                               стенде (N прогонов; например -test.run Video)
 #
 # Адрес стенда — TROSS_LAB_HOST (и ключ TROSS_LAB_KEY) из окружения или из
 # .lab.env в корне репозитория (файл вне git).
@@ -37,6 +38,11 @@ case ${1:-} in
 	"") ;;
 	build) "${remote[@]}" "$gobuild && ls bin" ;;
 	test) "${remote[@]}" "$gobuild && go vet ./... && go test ./..." ;;
-	itest) "${remote[@]}" "$gobuild && scripts/lab-itest ${2:-2}" ;;
-	*) echo "usage: lab-sync [build|test|itest [N]]" >&2; exit 2 ;;
+	# Флаги теста — через printf %q: ssh склеивает аргументы в строку для
+	# удалённой оболочки, и «|» в -test.run иначе стал бы конвейером.
+	itest)
+		flags=""
+		[ $# -gt 2 ] && flags=$(printf '%q ' "${@:3}")
+		"${remote[@]}" "$gobuild && scripts/lab-itest ${2:-2} $flags" ;;
+	*) echo "usage: lab-sync [build|test|itest [N] [test flags]]" >&2; exit 2 ;;
 esac

@@ -135,6 +135,11 @@ start_servers() {
 	# занимать: тесты монитора берут 203.0.113.10:81 как заведомо мёртвый источник.
 	nsx tl-inet setsid "$BIN/labsrv" serve -http ":88" -udp ":9001" > "$STATE/labsrv-peers.log" 2>&1 < /dev/null &
 	echo $! > "$STATE/labsrv-peers.pid"
+	# «Видео» на тех же адресах — свой порт: TCP 88 стенд с классами считает
+	# торрентом (configs/lab-classes.yaml), а правило пользователя важнее
+	# множества адресов YouTube.
+	nsx tl-inet setsid "$BIN/labsrv" serve -http ":89" -udp ":9020" > "$STATE/labsrv-video.log" 2>&1 < /dev/null &
+	echo $! > "$STATE/labsrv-video.pid"
 	if command -v iperf3 >/dev/null; then
 		nsx tl-inet iperf3 -s -B "$SRV_IP" -D --pidfile "$STATE/iperf3.pid" --logfile "$STATE/iperf3.log"
 	fi
@@ -152,7 +157,7 @@ start_servers() {
 }
 
 stop_servers() {
-	for p in labsrv labsrv-peers iperf3 dnsmasq; do
+	for p in labsrv labsrv-peers labsrv-video iperf3 dnsmasq; do
 		[ -f "$STATE/$p.pid" ] && kill "$(cat "$STATE/$p.pid")" 2>/dev/null || true
 		rm -f "$STATE/$p.pid"
 	done
@@ -190,7 +195,7 @@ cmd_status() {
 		nsx "$(ns_of "$l")" tc qdisc show dev cpe | sed 's/^/   /'
 	done
 	echo "== servers"
-	for p in labsrv labsrv-peers iperf3 dnsmasq; do
+	for p in labsrv labsrv-peers labsrv-video iperf3 dnsmasq; do
 		if [ -f "$STATE/$p.pid" ] && kill -0 "$(cat "$STATE/$p.pid")" 2>/dev/null; then echo "   $p running"; else echo "   $p not running"; fi
 	done
 }

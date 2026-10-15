@@ -9,6 +9,7 @@
 #     --working-directory=/home/tross/tross scripts/lab-soak 8h
 #   journalctl -u tross-soak -f          # ход прогона
 #   SOAK_UNIT=3 scripts/lab-soak 4m       # быстрая проверка самого скрипта
+#   SOAK_CONFIG=configs/lab-classes.yaml  # с классами Этапа 2 (--setenv=…)
 #   sudo systemctl stop tross-soak       # досрочно (стенд снимется)
 #
 # Результаты: ~/lab-results/<дата>-soak/ — metrics.jsonl (каждые 5 мин),
@@ -68,7 +69,7 @@ S "$lab" down >/dev/null 2>&1 || true
 S "$lab" up >/dev/null
 S "$lab" offload off >/dev/null
 S "$lab" shape isp1 8 1 0 500 500 >/dev/null
-tross "$bin/trossd" -config configs/lab.yaml -data-dir "$out/data" >"$out/trossd.log" 2>&1 &
+tross "$bin/trossd" -config "${SOAK_CONFIG:-configs/lab.yaml}" -data-dir "$out/data" >"$out/trossd.log" 2>&1 &
 for _ in $(seq 1 60); do
 	tross wget -qO- "$api/api/links" 2>/dev/null | grep -q '"id":"isp1"[^}]*"state":"up"' && break
 	sleep 1

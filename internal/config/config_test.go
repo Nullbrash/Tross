@@ -2,6 +2,7 @@ package config
 
 import (
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -410,5 +411,25 @@ func TestInboundSection(t *testing.T) {
 	ok := "inbound: { forwards: [{ name: x, port: 15, to: 192.168.1.5 }, { name: y, proto: udp, port: 15, to: 192.168.1.6 }] }\n"
 	if _, err := Parse([]byte(minimal + ok)); err != nil {
 		t.Errorf("tcp and udp on one port: %v", err)
+	}
+}
+
+// Стенд с классами — тот же стенд: расходиться с lab.yaml он может только
+// классами, правилами и пробросами, иначе тесты классов шли бы в другой сети.
+func TestLabClassesMatchesLab(t *testing.T) {
+	lab, err := Load("../../configs/lab.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cls, err := Load("../../configs/lab-classes.yaml")
+	if err != nil {
+		t.Fatalf("lab-classes config must be valid: %v", err)
+	}
+	if len(cls.Classes) < 5 || len(cls.Classify.Rules) == 0 || len(cls.Inbound.Forwards) == 0 {
+		t.Fatalf("lab-classes: classes %d, rules %d, forwards %d", len(cls.Classes), len(cls.Classify.Rules), len(cls.Inbound.Forwards))
+	}
+	cls.Classes, cls.Classify, cls.Inbound = lab.Classes, lab.Classify, lab.Inbound
+	if !reflect.DeepEqual(lab, cls) {
+		t.Error("configs/lab-classes.yaml differs from configs/lab.yaml outside classes, classify and inbound")
 	}
 }

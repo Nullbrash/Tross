@@ -1,0 +1,67 @@
+# Стенд с классами Этапа 2: то же, что configs/lab.yaml (TestLabClassesMatchesLab
+# сверяет), плюс классы как в configs/example.yaml, правила под серверы
+# стенда и проброс на клиент. Видео — balanced, а не best_throughput: без
+# закрепления сервиса разные адреса YouTube разошлись бы по каналам — так
+# проверка «одним каналом» строже.
+#   sudo ip netns exec tl-tross bin/trossd -config configs/lab-classes.yaml
+
+daemon:
+  dry_run: false
+  data_dir: /tmp/tross-lab
+
+log:
+  level: info
+
+api:
+  listen: 192.168.77.1:8080
+  allowed_networks: [127.0.0.0/8, 192.168.77.0/24]
+
+lan:
+  interface: lan
+  networks: [192.168.77.0/24]
+
+links:
+  - { id: isp1, name: ISP 1, kind: wired, interface: wan1, gateway: 100.64.1.1, priority: 10 }
+  - { id: isp2, name: ISP 2, kind: wired, interface: wan2, gateway: 100.64.2.1, priority: 20 }
+  - { id: lte,  name: LTE,   kind: lte,   interface: wan3, gateway: 100.64.3.1, priority: 100 }
+
+monitor:
+  targets: [203.0.113.1, 203.0.113.2, 203.0.113.3]
+  whitelist_targets: [203.0.113.3]
+  # На целях стенда TCP-портов нет — ответ RST тоже доказывает путь.
+  tcp_targets: [203.0.113.1:443, 203.0.113.2:443]
+  interval: 2s
+  timeout: 1s
+  # DNS стенда отвечает 203.0.113.10 (labsrv) на любое имя. Обычный DNS:
+  # корень сертификата DoH/DoT стенда демону не известен — DoH/DoT
+  # проверяют тесты монитора со своим корнем.
+  http_check:
+    interval: 4s
+    dns: [203.0.113.53]
+    urls:
+      - { url: "http://check.lab/generate_204", status: 204 }
+      - { url: "http://check.lab/success.txt", status: 200, body: success }
+  speedtest:
+    urls: ["http://203.0.113.10/bytes?n=200000000"]
+
+classes:
+  - { id: gaming, selector: lowest_latency, stickiness: session, sticky_ttl: 2h, links: [isp1, isp2], fallback: [lte] }
+  - { id: voip, selector: lowest_latency, stickiness: session, sticky_ttl: 2h, links: [isp1, isp2], fallback: [lte] }
+  - { id: streaming, selector: balanced, links: [isp1, isp2], fallback: [lte] }
+  - { id: bulk, selector: balanced, links: [isp1, isp2] }
+  - { id: default, selector: ordered, links: [isp1, isp2], fallback: [lte] }
+
+# Игра — эхо UDP 9000 стенда; загрузки (торрент) — HTTP «пиров» на TCP 88;
+# звонок — признак STUN из каталога; видео — множество адресов YouTube из
+# каталога (наполняют тесты; сервер «видео» стенда — TCP 89).
+classify:
+  rules:
+    - { name: lab-game, class: gaming, proto: udp, ports: ["9000"] }
+    - { name: lab-torrent, class: bulk, proto: tcp, ports: ["88"] }
+
+inbound:
+  forwards:
+    - { name: lab-server, proto: both, port: 25565, to: 192.168.77.10 }
+
+dns:
+  listen: ["192.168.77.1:53"]
