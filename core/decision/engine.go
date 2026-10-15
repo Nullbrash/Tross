@@ -119,6 +119,17 @@ func (e *Engine) Prune() {
 }
 
 func (e *Engine) Decide(f model.Flow, c model.Classification, rule *model.DomainRule) (model.Decision, error) {
+	return e.decide(f, c, rule, true)
+}
+
+// Explain — то же решение, что дал бы Decide, но без последствий: закрепления
+// не создаются и не продлеваются, выбор «лучшего» канала не сдвигается.
+// Вопрос «почему так» не должен менять будущие решения.
+func (e *Engine) Explain(f model.Flow, c model.Classification, rule *model.DomainRule) (model.Decision, error) {
+	return e.decide(f, c, rule, false)
+}
+
+func (e *Engine) decide(f model.Flow, c model.Classification, rule *model.DomainRule, commit bool) (model.Decision, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	pol, ok := e.policies[c.Class]
@@ -144,13 +155,17 @@ func (e *Engine) Decide(f model.Flow, c model.Classification, rule *model.Domain
 	if key.kind != 0 {
 		if p, ok := e.pins[key]; ok {
 			if now.Before(p.expires) && allowed(p.link) {
-				p.expires = now.Add(ttl)
-				e.pins[key] = p
+				if commit {
+					p.expires = now.Add(ttl)
+					e.pins[key] = p
+				}
 				d.Link, d.Sticky, d.ExpiresAt = p.link, true, p.expires
 				d.Reason = fmt.Sprintf("%spinned (%s); method: %s", note, key.kind, why)
 				return d, nil
 			}
-			delete(e.pins, key)
+			if commit {
+				delete(e.pins, key)
+			}
 		}
 	}
 
@@ -163,13 +178,15 @@ func (e *Engine) Decide(f model.Flow, c model.Classification, rule *model.Domain
 		if len(shares) == 0 {
 			return model.Decision{}, ErrNoUsableLink
 		}
-		d.Link = e.pickLocked(f, c.Class, pol, shares)
+		d.Link = e.pickLocked(f, c.Class, pol, shares, commit)
 		if len(primary) == 0 {
 			note += "fallback link; "
 		}
 	}
 	if key.kind != 0 {
-		e.pins[key] = pin{link: d.Link, expires: now.Add(ttl)}
+		if commit {
+			e.pins[key] = pin{link: d.Link, expires: now.Add(ttl)}
+		}
 		d.Sticky, d.ExpiresAt = true, now.Add(ttl)
 	}
 	d.Reason = fmt.Sprintf("%s%s; method: %s", note, pol.Selector, why)
@@ -201,7 +218,7 @@ func (e *Engine) pinFor(f model.Flow, c model.Classification, pol model.Policy) 
 	return pinKey{}, 0
 }
 
-func (e *Engine) pickLocked(f model.Flow, class model.TrafficClass, pol model.Policy, shares []LinkShare) model.LinkID {
+func (e *Engine) pickLocked(f model.Flow, class model.TrafficClass, pol model.Policy, shares []LinkShare, commit bool) model.LinkID {
 	if pol.Selector == model.SelectBalanced {
 		// Хеш «устройство + адрес назначения»: одно и то же назначение с
 		// устройства уходит в один канал, а не скачет по соединениям.
@@ -225,7 +242,9 @@ func (e *Engine) pickLocked(f model.Flow, class model.TrafficClass, pol model.Po
 	if prev, ok := e.best[class]; ok && prev != best && e.keepPrevLocked(pol, prev, best) {
 		best = prev
 	}
-	e.best[class] = best
+	if commit {
+		e.best[class] = best
+	}
 	return best
 }
 

@@ -63,6 +63,33 @@ func TestRealModeOnBench(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
+	// Пробы монитора — собственный трафик машины: в conntrack с каналом, без класса.
+	var conns struct {
+		Total       int
+		Connections []struct {
+			Proto, Link, Class string
+		}
+	}
+	getJSON(t, "http://"+cfg.API.Listen+"/api/connections?limit=50", &conns)
+	own := 0
+	for _, c := range conns.Connections {
+		if c.Link != "" && c.Class == "" {
+			own++
+		}
+	}
+	if own == 0 {
+		t.Errorf("no own probe connections among %d: %+v", conns.Total, conns.Connections)
+	}
+	var ex struct {
+		Classification struct{ Class, Source string }
+		Reason         string
+	}
+	getJSON(t, "http://"+cfg.API.Listen+"/api/explain?src=192.168.77.10&dst=203.0.113.7&port=443", &ex)
+	if ex.Classification.Class == "" || ex.Reason == "" {
+		t.Errorf("explain = %+v", ex)
+	}
+	t.Logf("measure: %d connections in conntrack (%d own probes); explain: %+v", conns.Total, own, ex)
+
 	cancel()
 	select {
 	case err := <-done:
@@ -77,5 +104,21 @@ func TestRealModeOnBench(t *testing.T) {
 	}
 	if err := exec.Command("nft", "list", "table", "inet", "tross").Run(); err == nil {
 		t.Fatal("nft table left after shutdown")
+	}
+}
+
+func getJSON(t *testing.T, url string, v any) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("%s: %s %s", url, resp.Status, body)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+		t.Fatalf("%s: %v", url, err)
 	}
 }

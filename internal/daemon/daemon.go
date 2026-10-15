@@ -84,6 +84,18 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 	coll := newCollector(log, st, mon)
+	bal, err := newBalancer(log, dp, mon, cfg.Policies())
+	if err != nil {
+		return fmt.Errorf("decision engine: %w", err)
+	}
+	cat, err := serviceCatalog(cfg)
+	if err != nil {
+		return err
+	}
+	expl, err := newExplainer(cfg, cat, bal, dp)
+	if err != nil {
+		return fmt.Errorf("classifier: %w", err)
+	}
 
 	srv := &http.Server{
 		Handler: api.New(api.Options{
@@ -93,6 +105,8 @@ func Run(ctx context.Context, opts Options) error {
 			Logs:            logs,
 			System:          coll.Last,
 			EventDrops:      bus.Dropped,
+			Connections:     dp.Connections,
+			Explain:         expl.explain,
 			AllowedNetworks: cfg.API.AllowedNetworks,
 			Version:         opts.Version,
 			DryRun:          cfg.Daemon.DryRun,
@@ -115,10 +129,6 @@ func Run(ctx context.Context, opts Options) error {
 	wg.Go(func() { logEvents(log, st, events) })
 	// Подписка до запуска монитора: первые смены состояний не теряются.
 	linkEvents, unsubscribeLinks := bus.Subscribe(64, event.TopicLinkState)
-	bal, err := newBalancer(log, dp, mon, cfg.Policies())
-	if err != nil {
-		return fmt.Errorf("decision engine: %w", err)
-	}
 	wg.Go(func() { bal.run(runCtx, linkEvents) })
 	wg.Go(func() { coll.run(runCtx, collectEvery) })
 	if every := sdnotify.WatchdogInterval(); every > 0 {
@@ -262,9 +272,9 @@ func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
 			Link: l.Model(), Table: l.Table, FwMark: l.FwMark, Gateway: l.GatewayAddr(),
 		})
 	}
-	cat, err := profile.Builtin()
+	cat, err := serviceCatalog(cfg)
 	if err != nil {
-		return spec, fmt.Errorf("service catalog: %w", err)
+		return spec, err
 	}
 	var classes []model.TrafficClass
 	policies := map[model.TrafficClass]dataplane.ClassPolicy{}
@@ -280,8 +290,17 @@ func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
 	for _, r := range cfg.Classify.Rules {
 		rules = append(rules, dataplane.UserRule{Name: r.Name, Class: r.Class, Devices: r.Devices, Match: r.Match})
 	}
-	spec.Classify = dataplane.CompileClassify(classes, policies, rules, cat.WithUser(cfg.Classify.Services))
+	spec.Classify = dataplane.CompileClassify(classes, policies, rules, cat)
 	return spec, nil
+}
+
+// serviceCatalog — встроенные профили с правками пользователя поверх.
+func serviceCatalog(cfg *config.Config) (profile.Catalog, error) {
+	cat, err := profile.Builtin()
+	if err != nil {
+		return profile.Catalog{}, fmt.Errorf("service catalog: %w", err)
+	}
+	return cat.WithUser(cfg.Classify.Services), nil
 }
 
 // logEvents пишет события в лог и историю, пока канал не закрыт отпиской.

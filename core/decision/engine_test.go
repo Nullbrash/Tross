@@ -342,3 +342,37 @@ func TestPlanFollowsLinksWithHysteresis(t *testing.T) {
 		t.Errorf("lte pins still honored after isp2 back: %+v", g4)
 	}
 }
+
+func TestExplainHasNoSideEffects(t *testing.T) {
+	b := newBench(t)
+	f := model.Flow{Proto: model.ProtoUDP, Src: netip.MustParseAddrPort(pc), Dst: netip.MustParseAddrPort("5.5.5.5:27015")}
+	game := class(model.ClassGaming)
+	// Объяснение не закрепляет сессию.
+	d, err := b.e.Explain(f, game, nil)
+	if err != nil || d.Link != "isp1" || !d.Sticky {
+		t.Fatalf("explain = %+v, %v", d, err)
+	}
+	if len(b.e.pins) != 0 {
+		t.Fatalf("Explain created pins: %v", b.e.pins)
+	}
+	// Закреплённую сессию объясняет как закреплённую, но срок не продлевает.
+	if _, err := b.e.Decide(f, game, nil); err != nil {
+		t.Fatal(err)
+	}
+	before := b.e.pins
+	exp := map[pinKey]pin{}
+	for k, v := range before {
+		exp[k] = v
+	}
+	b.now = b.now.Add(time.Hour)
+	b.set("isp2", model.LinkStateUp, 2*time.Millisecond)
+	d, _ = b.e.Explain(f, game, nil)
+	if d.Link != "isp1" || !strings.Contains(d.Reason, "pinned") {
+		t.Errorf("explain of pinned session = %+v", d)
+	}
+	for k, v := range b.e.pins {
+		if exp[k] != v {
+			t.Errorf("Explain changed pin %v: %v → %v", k, exp[k], v)
+		}
+	}
+}

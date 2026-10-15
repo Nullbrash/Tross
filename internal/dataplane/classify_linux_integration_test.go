@@ -255,3 +255,71 @@ func TestBitTorrentOnForbiddenLinkIsCutAndLearned(t *testing.T) {
 		t.Errorf("no connection to the learned peer with isp1 + bulk: %#x", marks(t, protoTCP, 5201))
 	}
 }
+
+// Connections и Pins читают то, что ядро сделало на самом деле: класс и
+// канал — из меток conntrack, закрепления — из множеств nft (формат JSON
+// nft проверяется здесь, в юнит-тесте он записан вручную).
+func TestConnectionsAndPinsFromKernel(t *testing.T) {
+	s := newSystem(t)
+	spec := classStand(t)
+	ctx := context.Background()
+	if err := s.Setup(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	setPlan(t, s,
+		decision.ClassPlan{Class: model.ClassDefault, Shares: one("isp1"), PinLinks: []model.LinkID{"isp1"}},
+		decision.ClassPlan{Class: model.ClassGaming, Shares: one("isp2"), PinLinks: []model.LinkID{"isp1", "isp2"}},
+		decision.ClassPlan{Class: model.ClassStreaming, Shares: one("isp1"), PinLinks: []model.LinkID{"isp1"}},
+	)
+	udp(t, "9006", "game")
+	for _, n := range spec.Classify.domainSets() {
+		if strings.HasPrefix(string(n), "tross_dp_youtube_video") {
+			if err := s.AddToSet(ctx, n, netip.MustParseAddr(srv), time.Minute); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if out, err := inClient(t, "wget -q -T 5 --tries=1 -O - http://"+srv+":8080/ | wc -c"); err != nil {
+		t.Fatalf("wget portal: %v %s", err, out)
+	}
+
+	conns, err := s.Connections(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var game, video *Connection
+	for i, c := range conns {
+		if c.Src.Addr() != client {
+			continue
+		}
+		switch {
+		case c.Proto == "udp" && c.Dst.Port() == 9006:
+			game = &conns[i]
+		case c.Proto == "tcp" && c.Dst.Port() == 8080 && c.Class == model.ClassStreaming:
+			video = &conns[i]
+		}
+	}
+	if game == nil || game.Link != "isp2" || game.Class != model.ClassGaming || game.Timeout <= 0 {
+		t.Errorf("game connection = %+v", game)
+	}
+	if video == nil || video.Link != "isp1" || video.State == "" {
+		t.Errorf("video connection = %+v", video)
+	}
+	t.Logf("measure: %d marked connections, game %+v, video %+v", len(conns), game, video)
+
+	pins, err := s.Pins(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sess, svc bool
+	for _, p := range pins {
+		if p.Device != client || p.Expires <= 0 || p.Expires > time.Hour {
+			continue
+		}
+		sess = sess || p.Class == model.ClassGaming && p.Service == "" && p.Link == "isp2"
+		svc = svc || p.Service == "youtube" && p.Link == "isp1"
+	}
+	if !sess || !svc {
+		t.Errorf("pins (session %v, service %v): %+v", sess, svc, pins)
+	}
+}

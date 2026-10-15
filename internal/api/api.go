@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"tross/core/model"
+	"tross/internal/dataplane"
 	"tross/internal/linkmon"
 	"tross/internal/logring"
 	"tross/internal/store"
@@ -24,7 +26,11 @@ type Options struct {
 	// System — последняя выборка загрузки машины; nil — выборок нет.
 	System func() *store.SystemSample
 	// EventDrops — сколько событий шина потеряла на переполненных подписчиках.
-	EventDrops      func() uint64
+	EventDrops func() uint64
+	// Connections — снимок размеченных соединений; nil — недоступно.
+	Connections func(ctx context.Context) ([]dataplane.Connection, error)
+	// Explain — «почему так» для соединения; nil — недоступно.
+	Explain         ExplainFunc
 	AllowedNetworks []netip.Prefix
 	Version         string
 	DryRun          bool
@@ -47,6 +53,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
 	mux.HandleFunc("GET /api/metrics", s.handleMetrics)
+	mux.HandleFunc("GET /api/connections", s.handleConnections)
+	mux.HandleFunc("GET /api/explain", s.handleExplain)
 	// С методом GET: иначе этот шаблон перехватил бы POST /api/health вместо ответа 405.
 	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})

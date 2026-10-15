@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"tross/core/decision"
@@ -28,8 +29,16 @@ type balancer struct {
 	mon    linkmon.LinkMonitor
 	engine *decision.Engine
 
+	mu      sync.Mutex // current читает API (объяснение решений)
 	current []decision.ClassPlan
 	usable  map[model.LinkID]bool
+}
+
+// applied — план, который сейчас стоит в ядре; nil — первого плана ещё не было.
+func (b *balancer) applied() []decision.ClassPlan {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.current
 }
 
 // newBalancer — распределения и закрепления по классам считает движок решений.
@@ -87,7 +96,9 @@ func (b *balancer) apply(ctx context.Context) {
 			for _, p := range plan {
 				b.log.Info("plan", "class", p.Class, "shares", p.Shares, "pins", p.PinLinks)
 			}
+			b.mu.Lock()
 			b.current = plan
+			b.mu.Unlock()
 		}
 	}
 

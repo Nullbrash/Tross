@@ -14,9 +14,11 @@ import (
 
 // Fake ничего не меняет в системе: только записывает и логирует вызовы.
 type Fake struct {
-	log *slog.Logger
-	mu  sync.Mutex
-	ops []string
+	log   *slog.Logger
+	mu    sync.Mutex
+	ops   []string
+	conns []Connection
+	pins  []Pin
 }
 
 var _ Dataplane = (*Fake)(nil)
@@ -78,4 +80,24 @@ func (f *Fake) RepairRoutes(context.Context) error { return nil }
 func (f *Fake) FlushConntrack(_ context.Context, id model.LinkID) error {
 	f.record("flush-conntrack", id)
 	return nil
+}
+
+// SetObserved задаёт, что вернут Connections и Pins (для тестов).
+func (f *Fake) SetObserved(conns []Connection, pins []Pin) {
+	f.mu.Lock()
+	f.conns, f.pins = conns, pins
+	f.mu.Unlock()
+}
+
+// Connections в «сухом» режиме — пусто: ядро не трогается.
+func (f *Fake) Connections(context.Context) ([]Connection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Connection(nil), f.conns...), nil
+}
+
+func (f *Fake) Pins(context.Context) ([]Pin, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Pin(nil), f.pins...), nil
 }

@@ -65,4 +65,8 @@ type Dataplane interface {
 	// сменился шлюз из DHCP: ядро удаляет маршрут вместе с пересозданным или
 	// выключенным интерфейсом, и без этого канал не вернулся бы до перезапуска.
 	RepairRoutes(ctx context.Context) error
+	// Connections — снимок размеченных соединений conntrack (только IPv4).
+	Connections(ctx context.Context) ([]Connection, error)
+	// Pins — действующие закрепления из множеств ядра.
+	Pins(ctx context.Context) ([]Pin, error)
 }

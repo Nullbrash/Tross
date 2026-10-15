@@ -408,6 +408,67 @@ func (s *System) FlushConntrack(_ context.Context, id model.LinkID) error {
 	return nil
 }
 
+func (s *System) Connections(context.Context) ([]Connection, error) {
+	s.mu.Lock()
+	spec := s.spec
+	s.mu.Unlock()
+	c, err := conntrack.Dial(nil)
+	if err != nil {
+		return nil, fmt.Errorf("dataplane: conntrack: %w", err)
+	}
+	defer c.Close()
+	flows, err := c.DumpFilter(conntrack.NewFilter().Family(netfilter.ProtoIPv4), nil)
+	if err != nil {
+		return nil, fmt.Errorf("dataplane: dump conntrack: %w", err)
+	}
+	var out []Connection
+	for _, f := range flows {
+		if f.Mark&(LinkMarkMask|classMarkMask) == 0 {
+			continue
+		}
+		o := f.TupleOrig
+		cn := Connection{
+			Proto:   protoName(o.Proto.Protocol),
+			Src:     netip.AddrPortFrom(o.IP.SourceAddress.Unmap(), o.Proto.SourcePort),
+			Dst:     netip.AddrPortFrom(o.IP.DestinationAddress.Unmap(), o.Proto.DestinationPort),
+			Timeout: time.Duration(f.Timeout) * time.Second,
+			Packets: f.CountersOrig.Packets + f.CountersReply.Packets,
+			Bytes:   f.CountersOrig.Bytes + f.CountersReply.Bytes,
+		}
+		cn.Link, cn.Class = decodeMark(spec, f.Mark)
+		if f.ProtoInfo.TCP != nil {
+			cn.State = tcpState(f.ProtoInfo.TCP.State)
+		}
+		out = append(out, cn)
+	}
+	return out, nil
+}
+
+func (s *System) Pins(ctx context.Context) ([]Pin, error) {
+	s.mu.Lock()
+	spec, up := s.spec, s.up
+	s.mu.Unlock()
+	if !up {
+		return nil, errors.New("dataplane: not set up")
+	}
+	var out []Pin
+	for _, ps := range pinSets(spec) {
+		cmd := exec.CommandContext(ctx, "nft", "-j", "list", "set", "inet", nftTable, ps.name)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		data, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("nft list set %s: %w: %s", ps.name, err, strings.TrimSpace(stderr.String()))
+		}
+		pins, err := parsePinSet(ps, data)
+		if err != nil {
+			return nil, fmt.Errorf("dataplane: %w", err)
+		}
+		out = append(out, pins...)
+	}
+	return out, nil
+}
+
 // runNft применяет скрипт одной транзакцией: при ошибке ядро не меняется.
 func runNft(ctx context.Context, script string) error {
 	cmd := exec.CommandContext(ctx, "nft", "-f", "-")

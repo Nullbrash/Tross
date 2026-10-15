@@ -95,6 +95,8 @@ systemctl daemon-reload && systemctl enable --now trossd
 | `GET /api/events?since=&limit=` | события (смены состояний каналов и др.) |
 | `GET /api/logs?level=&limit=` | свежие записи журнала |
 | `GET /api/metrics` | самозамеры демона и машины |
+| `GET /api/connections?device=&class=&link=&limit=` | соединения сейчас: класс и канал из меток conntrack |
+| `GET /api/explain?src=&dst=&port=&proto=&domain=` | почему соединение пойдёт так: класс, правило, закрепление, канал |
 
 ## Стенд для разработки
 
