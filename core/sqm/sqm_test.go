@@ -93,11 +93,12 @@ func TestAutoStepsAndLimits(t *testing.T) {
 		down, _ := l.Observe(Sample{At: at, DownBps: l.Down.Rate(), Delay: 40 * time.Millisecond})
 		return down
 	}
-	if loadedBloat(0) == "" || l.Down.Fraction() != 0.88 {
+	// Сразу ниже прошедшего: 0,9 × 90 = 81 Мбит/с.
+	if loadedBloat(0) == "" || l.Down.Fraction() != 0.81 {
 		t.Fatalf("first step down: %.3f", l.Down.Fraction())
 	}
 	// Не чаще DownEvery.
-	if loadedBloat(5*time.Second) != "" || l.Down.Fraction() != 0.88 {
+	if loadedBloat(2*time.Second) != "" || l.Down.Fraction() != 0.81 {
 		t.Errorf("stepped again within 5 s: %.3f", l.Down.Fraction())
 	}
 	for range 20 {
@@ -113,7 +114,7 @@ func TestAutoStepsAndLimits(t *testing.T) {
 	}
 	// Задержку дала отдача (упирается в свою очередь) — загрузку не трогаем.
 	at = at.Add(time.Minute)
-	down, up := l.Observe(Sample{At: at, DownBps: 10 * mbit, UpBps: l.Up.Rate(), Delay: 40 * time.Millisecond})
+	down, up := l.Observe(Sample{At: at, DownBps: l.Down.Rate() / 10, UpBps: l.Up.Rate(), Delay: 40 * time.Millisecond})
 	if down != "" || up == "" {
 		t.Errorf("blame: down %q, up %q — want upload only", down, up)
 	}
@@ -155,24 +156,29 @@ func run(l *Link, capacity func(i int) uint64, rounds int) (rates []uint64) {
 	return rates
 }
 
-// Тест скорости завысил базу на 10 % — процент сползает, пока очередь не
-// встанет ниже настоящей скорости, и дальше не «качается».
+// Тест скорости завысил базу на 10 % — очередь опускается ниже канала и
+// дальше ходит «пилой» под ним (как cake-autorate): важно, что в среднем
+// канал используется почти целиком, а задержка — редкие короткие моменты.
 func TestConvergesBelowCapacity(t *testing.T) {
 	l := link(WiredParams())
 	l.Down.SetTested(550 * mbit) // канал на деле 500
 	rates := run(l, func(int) uint64 { return 500 * mbit }, 600)
-	last := rates[len(rates)-1]
-	if last > 490*mbit || last < 440*mbit {
-		t.Errorf("settled at %s, want just below 500 Mbit/s", Mbit(last))
+	tail := rates[len(rates)-150:] // последние 5 минут
+	var sum, over uint64
+	for _, r := range tail {
+		sum += r
+		if r > 500*mbit*98/100 {
+			over++
+		}
 	}
-	lo, hi := last, last
-	for _, r := range rates[len(rates)-150:] {
-		lo, hi = min(lo, r), max(hi, r)
+	mean := sum / uint64(len(tail))
+	if mean < 440*mbit {
+		t.Errorf("mean queue %s over 5 min — want ≥ 88 %% of the 500 Mbit/s link", Mbit(mean))
 	}
-	if hi-lo > 15*mbit {
-		t.Errorf("oscillates %s…%s over the last 5 min", Mbit(lo), Mbit(hi))
+	if over*10 > uint64(len(tail)) {
+		t.Errorf("queue above the link %d of %d rounds — want ≤ 10 %%", over, len(tail))
 	}
-	t.Logf("settled at %s (%.1f %% of tested base)", Mbit(last), l.Down.Fraction()*100)
+	t.Logf("5 min: mean %s, above the link %d of %d rounds", Mbit(mean), over, len(tail))
 }
 
 // LTE: база — по насыщению; скорость сети упала втрое — очередь догоняет
@@ -289,4 +295,57 @@ func TestSlowTestServerDoesNotCapLink(t *testing.T) {
 	}
 	reached := slices.IndexFunc(rates, func(r uint64) bool { return r >= grown*95/100 })
 	t.Logf("tested 300, link 500: queue grew to %s; 95 %% of it after %v of full load", Mbit(grown), time.Duration(reached+1)*2*time.Second)
+}
+
+// Канал загрузки стал втрое медленнее очереди (вечер у провайдера), у
+// отдачи базы ещё нет: виновата загрузка — её очередь догоняет канал, а
+// отдача с подтверждениями базу не получает.
+func TestDropBlamesDownloadNotAcks(t *testing.T) {
+	l := link(WiredParams())
+	l.Down.SetTested(300 * mbit) // очередь 270
+	d, u := l.Observe(Sample{At: t0, DownBps: 120 * mbit, UpBps: 3 * mbit, Delay: 200 * time.Millisecond})
+	if d == "" || u != "" || l.Up.Rate() != 0 {
+		t.Errorf("down %q, up %q (up rate %s) — want only download to follow", d, u, Mbit(l.Up.Rate()))
+	}
+	if r := l.Down.Rate(); r >= 120*mbit {
+		t.Errorf("download queue %s, want below the 120 Mbit/s link", Mbit(r))
+	}
+}
+
+// Повтор находки стенда: оценка в момент первой задержки ошибается —
+// на разгоне занижена вдвое (загрузка 28 при канале 60), пока наполняется
+// буфер провайдера — завышена (отдача 66 при 60). Обе исправляются быстро.
+func TestFirstEstimateCorrected(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first uint64
+	}{{"underestimate", 28 * mbit}, {"overestimate", 66 * mbit}} {
+		l := link(WiredParams())
+		l.Observe(Sample{At: t0, DownBps: tc.first, UpBps: 1 * mbit, Delay: 300 * time.Millisecond})
+		rates := run(l, func(int) uint64 { return 60 * mbit }, 90) // 3 минуты
+		settle := slices.IndexFunc(rates, func(r uint64) bool { return r >= 50*mbit && r <= 59*mbit })
+		if settle < 0 || settle > 30 {
+			t.Errorf("%s: first %s on a 60 Mbit/s link — not within 50…59 in a minute (rounds %d): %v", tc.name, Mbit(tc.first), settle, rates[:min(30, len(rates))])
+			continue
+		}
+		t.Logf("%s: %s → in band after %v, last %s", tc.name, Mbit(tc.first), time.Duration(settle+1)*2*time.Second, Mbit(rates[len(rates)-1]))
+	}
+}
+
+// Загрузка упирается в свою заниженную очередь (плохой тест скорости), а
+// отдача без базы — настоящая раздача торрента: задержка — и её вина
+// тоже, иначе отдача без ограничения забила бы буфер провайдера.
+func TestRealUploadBlamedBesideSaturatedDownload(t *testing.T) {
+	l := link(WiredParams())
+	l.Down.SetTested(10 * mbit) // очередь 9 при настоящих 100
+	_, u := l.Observe(Sample{At: t0, DownBps: 9 * mbit, UpBps: 60 * mbit, Delay: 300 * time.Millisecond})
+	if u == "" || l.Up.Rate() == 0 {
+		t.Errorf("seeding upload not given a queue: %q", u)
+	}
+	// А подтверждения загрузки (несколько % от неё) — нет.
+	l = link(WiredParams())
+	l.Down.SetTested(100 * mbit)
+	if _, u := l.Observe(Sample{At: t0, DownBps: 90 * mbit, UpBps: 3 * mbit, Delay: 300 * time.Millisecond}); u != "" {
+		t.Errorf("acks got a queue: %q", u)
+	}
 }

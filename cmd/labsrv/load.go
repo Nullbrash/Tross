@@ -40,6 +40,7 @@ func load(args []string) error {
 	targets := fs.String("targets", "", "spread workers over addresses of this IPv4 prefix (server must answer on all of them)")
 	udpPPS := fs.Int("udp-pps", 0, "background UDP packets per second to random address:port in -targets")
 	targetPort := fs.String("port", "", "server port on -targets addresses; default — the port of -url")
+	src := fs.String("src", "", "source IPv4 for TCP (another «device» on the bench client)")
 	_ = fs.Parse(args)
 	if *base == "" || *down+*up+*udpPPS == 0 || *chunk <= 0 {
 		return errors.New("need -url, -down, -up or -udp-pps, positive -chunk")
@@ -69,8 +70,16 @@ func load(args []string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *duration)
 	defer cancel()
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	if *src != "" {
+		a, err := netip.ParseAddr(*src)
+		if err != nil {
+			return fmt.Errorf("-src: %w", err)
+		}
+		dialer.LocalAddr = net.TCPAddrFromAddrPort(netip.AddrPortFrom(a, 0))
+	}
 	tr := &http.Transport{
-		DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		DialContext:         dialer.DialContext,
 		DisableKeepAlives:   *churn,
 		MaxIdleConnsPerHost: *down + *up,
 	}

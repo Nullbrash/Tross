@@ -317,6 +317,7 @@ func TestPortForwardThroughBothLinks(t *testing.T) {
 // задержки (без настроек и тестов) и ставит очередь ниже неё; тест скорости
 // по команде — база из замера (на время теста ограничение снято).
 func TestSQMLearnsLinkSpeed(t *testing.T) {
+	clearQueues(t)
 	cfg := classCfg(t)
 	for i := range cfg.Links {
 		cfg.Links[i].SQM.Enabled = cfg.Links[i].ID == "isp1"
@@ -387,4 +388,161 @@ func TestSQMLearnsLinkSpeed(t *testing.T) {
 		t.Errorf("after speed test: %+v — want base from the test ≈ 200 Mbit/s", d)
 	}
 	t.Logf("measure: after speed test: rate %d, base %d", d.RateBps, d.BaseBps)
+}
+
+// clearQueues снимает очереди с каналов стенда: они переживают остановку
+// демона, и тест иначе начал бы со скорости, оставленной прошлым тестом.
+func clearQueues(t *testing.T) {
+	t.Helper()
+	for i := range wans {
+		_ = exec.Command("tc", "qdisc", "del", "dev", wans[i], "root").Run()
+		_ = exec.Command("tc", "qdisc", "del", "dev", wans[i], "ingress").Run()
+		_ = exec.Command("ip", "link", "del", "ifb-tross"+strconv.Itoa(i)).Run()
+	}
+}
+
+// cakeCfg — стенд с классами и очередями на всех каналах (как
+// scripts/lab-cake-config); очереди прошлых тестов сняты.
+func cakeCfg(t *testing.T) *config.Config {
+	t.Helper()
+	clearQueues(t)
+	cfg := classCfg(t)
+	for i := range cfg.Links {
+		cfg.Links[i].SQM.Enabled = true
+	}
+	return cfg
+}
+
+type sqmDir struct {
+	RateBps uint64 `json:"rate_bps"`
+	BaseBps uint64 `json:"base_bps"`
+	Basis   string `json:"basis"`
+}
+
+func linkSQM(t *testing.T, cfg *config.Config, id string) (d, u sqmDir) {
+	t.Helper()
+	var resp struct {
+		Links []struct {
+			ID  string
+			SQM *struct{ Down, Up sqmDir }
+		}
+	}
+	getJSON(t, "http://"+cfg.API.Listen+"/api/links", &resp)
+	for _, l := range resp.Links {
+		if l.ID == id && l.SQM != nil {
+			return l.SQM.Down, l.SQM.Up
+		}
+	}
+	t.Fatalf("%s has no sqm in /api/links", id)
+	return
+}
+
+// startLoad — нагрузка labsrv с клиента стенда до конца теста.
+func startLoad(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("ip", append([]string{"netns", "exec", "tl-client", labsrvBin(t), "load"}, args...)...)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	return cmd
+}
+
+// Скорость канала упала под нагрузкой (вечер у провайдера) — очередь
+// догоняет её сама, без перезапуска, и пинг возвращается; канал снова
+// быстрый — очередь растёт обратно.
+func TestSQMFollowsSpeedChange(t *testing.T) {
+	cfg := cakeCfg(t)
+	lab(t, "shape", "isp1", "8", "1", "0", "300", "100")
+	t.Cleanup(func() { lab(t, "shape", "isp1", "8", "1", "0", "0", "0") })
+	startDaemon(t, cfg)
+	startLoad(t, "-url", "http://"+benchSrv, "-down", "4", "-duration", "150s")
+	until(t, 30*time.Second, "base learned at 300 Mbit/s", func() bool { d, _ := linkSQM(t, cfg, "isp1"); return d.RateBps > 0 })
+	d, _ := linkSQM(t, cfg, "isp1")
+	t.Logf("measure: at 300 Mbit/s: queue %d (%s)", d.RateBps, d.Basis)
+
+	lab(t, "shape", "isp1", "8", "1", "0", "120", "100")
+	took := until(t, 30*time.Second, "queue follows the drop to 120 Mbit/s", func() bool {
+		d, _ := linkSQM(t, cfg, "isp1")
+		return d.RateBps > 0 && d.RateBps < 120_000_000
+	})
+	d, u := linkSQM(t, cfg, "isp1")
+	t.Logf("measure: drop 300 → 120 Mbit/s followed in %v: queue %d; upload %d (%s)", took.Round(100*time.Millisecond), d.RateBps, u.RateBps, u.Basis)
+	if u.RateBps != 0 && u.RateBps < 30_000_000 {
+		t.Errorf("upload queue cut to %d bit/s by the download's delay", u.RateBps)
+	}
+	// Пинг игры после подстройки — у простоя, не у раздутой очереди.
+	time.Sleep(5 * time.Second)
+	out, err := exec.Command("ip", "netns", "exec", "tl-client", labsrvBin(t), "udpping",
+		"-target", benchSrv+":9000", "-rate", "20", "-n", "100").CombinedOutput()
+	if err != nil {
+		t.Fatalf("udpping: %v %s", err, out)
+	}
+	t.Logf("measure: game under load after the drop: %s", strings.TrimSpace(string(out)))
+	if avg := avgRTT(t, string(out)); avg > 8+15+5 {
+		t.Errorf("game ping %.1f ms under load after the drop — want ≤ idle + 15 ms", avg)
+	}
+
+	lab(t, "shape", "isp1", "8", "1", "0", "300", "100")
+	time.Sleep(60 * time.Second)
+	d2, _ := linkSQM(t, cfg, "isp1")
+	if d2.RateBps <= d.RateBps {
+		t.Errorf("queue did not grow back after the link recovered: %d → %d", d.RateBps, d2.RateBps)
+	}
+	t.Logf("measure: 60 s after recovery to 300 Mbit/s: queue %d → %d", d.RateBps, d2.RateBps)
+}
+
+// avgRTT — средняя задержка из строки udpping «… rtt min/avg/max a/b/c ms …».
+func avgRTT(t *testing.T, s string) float64 {
+	t.Helper()
+	i := strings.Index(s, "rtt min/avg/max ")
+	if i < 0 {
+		t.Fatalf("no rtt in %q", s)
+	}
+	parts := strings.Split(strings.Fields(s[i+len("rtt min/avg/max "):])[0], "/")
+	avg, err := strconv.ParseFloat(parts[1], 64)
+	if err != nil {
+		t.Fatalf("rtt in %q: %v", s, err)
+	}
+	return avg
+}
+
+// Два устройства в одной корзине: у одного 16 потоков загрузки, у другого
+// один — CAKE делит канал между устройствами, а не между потоками
+// (вопрос 2 плана Этапа 3).
+func TestCakeSharesBetweenDevices(t *testing.T) {
+	cfg := cakeCfg(t)
+	for i := range cfg.Links {
+		if cfg.Links[i].ID == "isp1" {
+			cfg.Links[i].SQM.DownMbit, cfg.Links[i].SQM.UpMbit = 100, 100 // база из конфига: без обучения
+		}
+	}
+	lab(t, "shape", "isp1", "8", "1", "0", "100", "100")
+	t.Cleanup(func() { lab(t, "shape", "isp1", "8", "1", "0", "0", "0") })
+	const second = "192.168.77.11"
+	if out, err := inNS("tl-client", "ip addr add "+second+"/24 dev eth0"); err != nil {
+		t.Fatalf("second device address: %v %s", err, out)
+	}
+	t.Cleanup(func() { _, _ = inNS("tl-client", "ip addr del "+second+"/24 dev eth0") })
+	startDaemon(t, cfg)
+	many := startLoad(t, "-url", "http://"+benchSrv, "-down", "16", "-duration", "20s")
+	one := startLoad(t, "-url", "http://"+benchSrv, "-down", "1", "-duration", "20s", "-src", second)
+	_ = many.Wait()
+	_ = one.Wait()
+	rate := func(c *exec.Cmd) float64 {
+		s := c.Stdout.(*bytes.Buffer).String()
+		i := strings.Index(s, "down ")
+		if i < 0 {
+			t.Fatalf("no rate in %q", s)
+		}
+		v, _ := strconv.ParseFloat(strings.Fields(s[i+5:])[0], 64)
+		return v
+	}
+	m, o := rate(many), rate(one)
+	t.Logf("measure: device with 16 flows %.1f Mbit/s, device with 1 flow %.1f Mbit/s", m, o)
+	if o < (m+o)*0.35 {
+		t.Errorf("one-flow device got %.1f of %.1f Mbit/s — want about half", o, m+o)
+	}
 }

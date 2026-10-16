@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Конфиг стенда с очередями CAKE (Этап 3): configs/lab-classes.yaml, у всех
+# каналов — sqm.enabled. Печатает конфиг в stdout. Отдельного файла нет:
+# копия lab-classes.yaml разошлась бы с ним.
+#
+#   scripts/lab-cake-config > /tmp/lab-cake.yaml
+#   SQM_START=95 SQM_AUTO=false scripts/lab-cake-config   фиксированный процент
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+extra=""
+[ -n "${SQM_START:-}" ] && extra+=", start_pct: $SQM_START"
+[ -n "${SQM_AUTO:-}" ] && extra+=", auto: $SQM_AUTO"
+# Каналы в lab-classes.yaml — по строке «  - { id: …, … }» в разделе links.
+awk -v sqm="sqm: { enabled: true$extra }" '
+	/^[a-z_]+:/ { inlinks = ($0 ~ /^links:/) }
+	inlinks && /^  - \{ id: .* \}$/ { sub(/ \}$/, ", " sqm " }") }
+	{ print }
+' configs/lab-classes.yaml

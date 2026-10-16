@@ -49,15 +49,18 @@ classes:
   - { id: voip, selector: lowest_latency, stickiness: session, sticky_ttl: 2h, links: [isp1, isp2], fallback: [lte], priority: high }
   - { id: streaming, selector: balanced, links: [isp1, isp2], fallback: [lte], priority: video }
   - { id: bulk, selector: balanced, links: [isp1, isp2], priority: low }
+  - { id: broadcast, selector: best_upload, stickiness: destination, sticky_ttl: 12h, links: [isp1, isp2], priority: video }
   - { id: default, selector: ordered, links: [isp1, isp2], fallback: [lte] }
 
 # Игра — эхо UDP 9000 стенда; загрузки (торрент) — HTTP «пиров» на TCP 88;
 # звонок — признак STUN из каталога; видео — множество адресов YouTube из
-# каталога (наполняют тесты; сервер «видео» стенда — TCP 89).
+# каталога (наполняют тесты; сервер «видео» стенда — TCP 89); свой эфир —
+# TCP 89 к 203.0.113.100 (тот же сервер «видео», отдельный адрес).
 classify:
   rules:
     - { name: lab-game, class: gaming, proto: udp, ports: ["9000"] }
     - { name: lab-torrent, class: bulk, proto: tcp, ports: ["88"] }
+    - { name: lab-broadcast, class: broadcast, proto: tcp, ports: ["89"], networks: [203.0.113.100/32] }
 
 inbound:
   forwards:

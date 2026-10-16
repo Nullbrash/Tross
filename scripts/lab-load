@@ -4,7 +4,14 @@
 # через isp1) и с демоном. Запуск на стенде от обычного пользователя (sudo без
 # пароля); стенд поднимается с нуля и в конце снимается.
 #
-#   scripts/lab-load [секунд на сценарий=60] [bare|daemon|classes|both=both] [сценарии...]
+#   scripts/lab-load [секунд на сценарий=60] [bare|daemon|classes|cake|both=both] [сценарии...]
+#
+# cake — классы и очереди CAKE на всех каналах (scripts/lab-cake-config;
+# SQM_START/SQM_AUTO — фиксированный процент); перед сценариями — тест
+# скорости isp1, как ночью; в конце сценария — скорости очередей. Сценарий
+# broadcast — свой эфир (8 Мбит/с отдачи) во время полной отдачи торрента.
+# LOAD_RATES="isp1 isp2" — скорости каналов, Мбит/с в обе стороны (по
+# умолчанию "500 300").
 #
 # classes — демон с классами Этапа 2 (configs/lab-classes.yaml): игра —
 # класс gaming, торрент (TCP 88) — bulk, прочее — default; доменные
@@ -46,6 +53,8 @@ declare -A LOAD=(
 	[torrent]="-down 150 -up 50 -chunk 1000000 -churn"
 	[steam]="-down 8 -chunk 100000000"
 	[stream]="-down 1 -down-mbit 20 -up 1 -up-mbit 8 -chunk 5000000000"
+	# Свой эфир 1080p: только отдача 8 Мбит/с (с классами — класс broadcast).
+	[broadcast-up]="-up 1 -up-mbit 8 -chunk 5000000000"
 	# Домашний торрент-клиент с ограничением скорости: одна загрузка до 400
 	# пиров, до 80 слотов отдачи, ~2/0,5 МБ/с на всё, uTP и DHT — фон UDP;
 	# пиры — 64 адреса.
@@ -72,7 +81,12 @@ trap cleanup EXIT
 S "$lab" down >/dev/null 2>&1 || true
 S "$lab" up >/dev/null
 S "$lab" offload off >/dev/null
-S "$lab" shape isp1 8 1 0 500 500 >/dev/null
+# Скорости каналов: isp1 — как прежде 500/500; isp2 — тоже с ограничением:
+# с классами загрузки делятся между каналами, а настоящий второй провайдер
+# гигабиты не даст (без ограничения торрент уходил в isp2 на 1,5 Гбит/с).
+read -r r1 r2 <<<"${LOAD_RATES:-500 300}"
+S "$lab" shape isp1 8 1 0 "$r1" "$r1" >/dev/null
+S "$lab" shape isp2 12 2 0 "$r2" "$r2" >/dev/null
 
 # fill_sets N — в каждое доменное множество (наполнит резолвер, этап 4) по N
 # адресов из 100.100.0.0/14 (на стенде не встречаются): время загрузки и
@@ -116,12 +130,16 @@ run_scenario() {
 	idle | game) ;;
 	all) loads=(torrent steam stream) ;;
 	all-user) loads=(torrent-user steam stream) ;;
+	# Эфир во время полной отдачи торрента (вопрос 5 плана Этапа 3).
+	broadcast) loads=(torrent-max broadcast-up) ;;
 	*) loads=("$sc") ;;
 	esac
 	for k in "${loads[@]}"; do
 		local url=$srv
-		# С классами торрент — на TCP 88 «пиров»: его правило в lab-classes.yaml.
-		if [ "$mode" = classes ] && [ "$k" = torrent ]; then url=$srv:88; fi
+		# С классами торрент — на TCP 88 «пиров», эфир — на 203.0.113.100:89:
+		# их правила в lab-classes.yaml.
+		if [ "$mode" != bare ] && [ "$mode" != daemon ] && [ "$k" = torrent ]; then url=$srv:88; fi
+		if [ "$k" = broadcast-up ]; then url=http://203.0.113.100:89; fi
 		# shellcheck disable=SC2086
 		client "$bin/labsrv" load -url "$url" ${LOAD[$k]} -duration "${dur}s" >"$dir/load-$k.txt" 2>&1 &
 		pids+=($!)
@@ -135,6 +153,13 @@ run_scenario() {
 	for f in "$dir"/load-*.txt "$dir/game.txt"; do [ -f "$f" ] && echo "    $(basename "$f"): $(tail -1 "$f")"; done
 	grep -E '^(cpu|mem|proc|disk|temp|net tl-tross/wan1 )' "$dir/summary.txt" | sed 's/^/    /' || true
 	echo "    conntrack max: $(sort -n "$dir/conntrack.txt" | tail -1)"
+	if [ "$mode" = cake ]; then
+		S ip netns exec tl-tross wget -qO- "$api/api/links" >"$dir/links.json" || true
+		python3 -c 'import json,sys
+for l in json.load(open(sys.argv[1]))["links"]:
+    q = l.get("sqm")
+    if q: print("    sqm %s: down %.0f Mbit/s (%s, %.1f %%), up %.0f Mbit/s (%s, %.1f %%)" % (l["id"], q["down"]["rate_bps"]/1e6, q["down"].get("basis", "-"), q["down"]["pct"], q["up"]["rate_bps"]/1e6, q["up"].get("basis", "-"), q["up"]["pct"]))' "$dir/links.json" || true
+	fi
 }
 
 for mode in $modes; do
@@ -142,11 +167,15 @@ for mode in $modes; do
 	bare)
 		S "$lab" simple-route isp1 >/dev/null
 		;;
-	daemon | classes)
+	daemon | classes | cake)
 		S "$lab" simple-route off >/dev/null
 		S rm -rf "$out/data"
 		cfg=configs/lab.yaml
 		if [ "$mode" = classes ]; then cfg=configs/lab-classes.yaml; fi
+		if [ "$mode" = cake ]; then
+			cfg=$out/lab-cake.yaml
+			scripts/lab-cake-config >"$cfg"
+		fi
 		S ip netns exec tl-tross "$bin/trossd" -config "$cfg" -data-dir "$out/data" >"$out/trossd-$mode.log" 2>&1 &
 		for _ in $(seq 1 60); do
 			S ip netns exec tl-tross wget -qO- "$api/api/links" 2>/dev/null | grep -q '"id":"isp1"[^}]*"state":"up"' && break
@@ -154,6 +183,12 @@ for mode in $modes; do
 		done
 		S ip netns exec tl-tross wget -qO- "$api/api/links" | grep -q '"id":"isp1"[^}]*"state":"up"' || { echo "daemon did not bring isp1 up"; exit 1; }
 		if [ "$mode" = classes ]; then fill_sets "${SET_FILL:-2000}"; fi
+		if [ "$mode" = cake ]; then
+			# Как ночной тест: база загрузки isp1 — из замера (отдача —
+			# пассивно, по насыщению в первых сценариях).
+			S ip netns exec tl-tross wget -qO- --post-data= "$api/api/links/isp1/speedtest" >"$out/cake-speedtest.json" || true
+			echo "    speed test isp1: $(cat "$out/cake-speedtest.json")"
+		fi
 		;;
 	*) echo "unknown mode $mode"; exit 2 ;;
 	esac
