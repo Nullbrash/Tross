@@ -26,7 +26,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 # Один прогон на стенде за раз: два прогона поднимали и снимали бы один и тот
-# же стенд. Блокировка держится до выхода процесса.
+# же стенд. Блокировка держится до выхода процесса; фоновым циклам её
+# дескриптор не передаётся (9>&-) — иначе их недоспанный sleep держал бы
+# стенд занятым минуты после конца прогона.
 exec 9>>/run/lock/tross-lab.lock
 flock -n 9 || { echo "lab-soak: stand is busy — another run holds /run/lock/tross-lab.lock" >&2; exit 3; }
 total=${1:-8h}
@@ -104,7 +106,7 @@ S "$bin/labmeasure" -out "$out/measure" -interval 10s -duration "$((deadline - $
 	l=$(tross wget -qO- "$api/api/links" 2>/dev/null || echo '{}')
 	echo "{\"t\":\"$(date -Is)\",\"conntrack\":$ct,\"data_dir_bytes\":${db:-0},\"metrics\":$m,\"links\":$l}" >>"$out/metrics.jsonl"
 	sleep 300
-done) &
+done) 9>&- &
 
 chaos() { echo "$(date +%T) $*" >>"$out/chaos.txt"; }
 
@@ -124,7 +126,7 @@ if [ "${SOAK_PROVIDER:-}" = 1 ]; then
 			sleep $((5 * unit))
 		done
 		i=$((i + 1))
-	done) &
+	done) 9>&- &
 fi
 
 # Хаос каналов: обрыв (потери или нет линка) и возврат; restore берёт
@@ -145,7 +147,7 @@ if [ "${SOAK_CHAOS:-}" = 1 ]; then
 		sleep "$hold"
 		for v in "${victims[@]}"; do S "$lab" restore "$v" >/dev/null; done
 		chaos "chaos: restore ${victims[*]}"
-	done) &
+	done) 9>&- &
 fi
 
 # Хаос перезапусков: мягкая остановка и аварийное убийство по очереди;
@@ -172,7 +174,7 @@ if [ -n "${SOAK_RESTARTS:-}" ]; then
 		else
 			chaos "restart ($how): DAEMON DID NOT COME BACK"
 		fi
-	done) &
+	done) 9>&- &
 fi
 
 log "soak start, until $(date -d @"$deadline" +%T)"

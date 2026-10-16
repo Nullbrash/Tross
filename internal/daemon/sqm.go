@@ -100,19 +100,14 @@ func (c *sqmController) observe(ctx context.Context, at time.Time, r event.LinkR
 	if !ok || sl.testing {
 		return
 	}
-	busy := sl.q.Busy(r.DownBps, r.UpBps)
-	delay, ok := sl.delay.Observe(r.RTTs, busy)
+	delay, ok := sl.delay.Observe(r.RTTs, sl.q.Busy(r.DownBps, r.UpBps))
 	if !ok {
-		if !busy {
-			return
-		}
-		// Под нагрузкой не ответила ни одна проба: очередь у провайдера
-		// длиннее таймаута проб (у LTE буферы на секунды). Это та же
-		// «раздутость» — и успеть надо до того, как монитор сочтёт канал
-		// упавшим.
+		// Не ответила ни одна проба: под нагрузкой это бывает очередь у
+		// провайдера длиннее таймаута проб (у LTE буферы на секунды) — та же
+		// «раздутость»; обрыв канала от неё отличает core/sqm.
 		delay = lostDelay
 	}
-	down, up := sl.q.Observe(sqm.Sample{At: at, DownBps: r.DownBps, UpBps: r.UpBps, Delay: delay})
+	down, up := sl.q.Observe(sqm.Sample{At: at, DownBps: r.DownBps, UpBps: r.UpBps, Delay: delay, Lost: !ok})
 	if down == "" && up == "" {
 		return
 	}

@@ -134,17 +134,27 @@ func TestRoundsNotJournaled(t *testing.T) {
 }
 
 // Под нагрузкой не ответила ни одна проба (буфер у провайдера длиннее
-// таймаута проб) — это раздутость: база находится сразу, не дожидаясь,
-// пока монитор сочтёт канал упавшим. Без нагрузки молчание — не повод.
+// таймаута проб), а трафик идёт — это раздутость: база находится за два
+// раунда, раньше, чем монитор сочтёт канал упавшим (три). Без нагрузки
+// молчание — не повод, при обрыве трафик падает — тоже.
 func TestSQMLostProbesUnderLoad(t *testing.T) {
 	c, _, _ := sqmBench(t)
 	ctx := context.Background()
 	at := time.Date(2026, 10, 15, 21, 0, 0, 0, time.UTC)
-	c.observe(ctx, at, event.LinkRound{Link: "isp2", DownBps: 300_000})
-	if q := c.status()["isp2"]; q.Down.RateBps != 0 {
-		t.Fatalf("idle silence set a rate: %+v", q.Down)
+	round := func(down, up uint64) {
+		c.observe(ctx, at, event.LinkRound{Link: "isp2", DownBps: down, UpBps: up})
+		at = at.Add(2 * time.Second)
 	}
-	c.observe(ctx, at.Add(2*time.Second), event.LinkRound{Link: "isp2", DownBps: 180_000_000, UpBps: 2_000_000})
+	round(300_000, 0)
+	round(300_000, 0)
+	if q := c.status()["isp2"]; q.Down.RateBps != 0 || q.Up.RateBps != 0 {
+		t.Fatalf("idle silence set a rate: %+v", q)
+	}
+	round(180_000_000, 2_000_000)
+	if q := c.status()["isp2"]; q.Down.RateBps != 0 {
+		t.Fatalf("one silent round set a rate: %+v", q.Down)
+	}
+	round(180_000_000, 2_000_000)
 	if q := c.status()["isp2"]; q.Down.Basis != string(sqm.BasisPassive) || q.Down.RateBps != 162_000_000 {
 		t.Errorf("lost probes under load: %+v", q.Down)
 	}

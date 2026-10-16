@@ -136,48 +136,92 @@ type Sample struct {
 	// Delay — прирост задержки канала над базовой (минимальной) в этом
 	// раунде; задержка общая для обоих направлений.
 	Delay time.Duration
+	// Lost — не ответила ни одна проба (Delay — условная, заведомо большая).
+	Lost bool
 }
 
 // Link — очереди обоих направлений канала. Рост задержки один на канал, и
 // чьё направление виновато, решает трафик: то, что упирается в свою
 // очередь, иначе — самое нагруженное. Не потокобезопасен.
-type Link struct{ Down, Up *Shaper }
+type Link struct {
+	Down, Up *Shaper
+	// bloated — раундов подряд с задержкой выше порога: одиночный скачок
+	// (Wi-Fi, маршрут, чужая очередь) — не предел канала.
+	bloated int
+	// answered — трафик последнего раунда, где пробы отвечали.
+	answered uint64
+}
+
+// confirmRounds — столько раундов подряд задержка держится, прежде чем по
+// ней учится база, опускается ниже предела процента или очередь падает до
+// прошедшего трафика; до этого — один шаг Cut, не ниже Min × база (у LTE
+// предел — половина базы, а задержка шумная).
+const confirmRounds = 2
 
 // Observe — раунд наблюдения; причины изменений по направлениям ("" — без
 // изменений).
 func (l *Link) Observe(x Sample) (down, up string) {
+	traffic := x.DownBps + x.UpBps
+	if x.Lost {
+		// Молчат все пробы: так выглядит и буфер провайдера на секунды, и
+		// обрыв канала. При обрыве трафик падает, при раздутости — идёт;
+		// в простое молчание — тоже не раздутость.
+		if !l.Busy(x.DownBps, x.UpBps) || traffic < l.answered/2 {
+			l.bloated = 0
+			return "", ""
+		}
+	} else {
+		l.answered = traffic
+	}
 	d, u := l.Down.load(x.DownBps), l.Up.load(x.UpBps)
+	l.Down.noteFull(x.At, d)
+	l.Up.noteFull(x.At, u)
 	if x.Delay > l.Down.p.Delay || x.Delay > l.Up.p.Delay {
+		l.bloated++
+		confirmed := l.bloated >= confirmRounds
+		if x.Lost && !confirmed {
+			// Один раунд молчания от начала обрыва не отличить.
+			return "", ""
+		}
+		// Подтверждения загрузки — 2–4 % её трафика: направление меньше
+		// десятой встречного упирается разве что в свою маленькую очередь,
+		// а буфер провайдера забивает встречное.
+		ackDown, ackUp := x.DownBps*10 < x.UpBps, x.UpBps*10 < x.DownBps
 		// Виновато направление, которое упирается в свою известную очередь.
-		// Без базы загрузка неизвестна: заметный трафик похож на насыщение
-		// и у отдачи, которая при загрузке — одни подтверждения (их база
-		// урезала бы отдачу до пары Мбит/с), — поэтому такое направление
-		// виновато только как самое нагруженное.
-		// Направление без базы виновато и тогда, когда его трафик заметен
-		// рядом со встречным (≥ четверти): иначе направление, упёршееся в
-		// свою (пусть заниженную) очередь, забирало бы всю вину, а
-		// настоящая отдача (раздача торрента) без ограничения забивала бы
-		// буфер провайдера — с ним и подтверждения загрузок.
-		blameDown := l.Down.base != 0 && d >= l.Down.p.Load || l.Down.base == 0 && x.DownBps >= l.Down.p.MinRate && x.DownBps >= x.UpBps/4
-		blameUp := l.Up.base != 0 && u >= l.Up.p.Load || l.Up.base == 0 && x.UpBps >= l.Up.p.MinRate && x.UpBps >= x.DownBps/4
+		// Без базы загрузка неизвестна, и направление виновато, только если
+		// его трафик заметен рядом со встречным (≥ четверти): иначе
+		// направление, упёршееся в свою (пусть заниженную) очередь, забирало
+		// бы всю вину, а настоящая отдача (раздача торрента) без ограничения
+		// забивала бы буфер провайдера — с ним и подтверждения загрузок.
+		blameDown := !ackDown && (l.Down.base != 0 && d >= l.Down.p.Load || l.Down.base == 0 && x.DownBps >= l.Down.p.MinRate && x.DownBps >= x.UpBps/4)
+		blameUp := !ackUp && (l.Up.base != 0 && u >= l.Up.p.Load || l.Up.base == 0 && x.UpBps >= l.Up.p.MinRate && x.UpBps >= x.DownBps/4)
 		if !blameDown && !blameUp {
 			// Никто не упирается в очередь, а задержка растёт: канал стал
-			// медленнее очереди (или очереди ещё нет) — виновато более
-			// нагруженное направление: по доле, если обе известны, иначе по
-			// трафику.
+			// медленнее очереди (или очереди ещё нет) — виновато
+			// направление с трафиком, а не его подтверждения; если оба
+			// заметны — более нагруженное: по доле, если обе базы известны,
+			// иначе по трафику.
 			if l.Down.base == 0 || l.Up.base == 0 {
 				d, u = float64(x.DownBps), float64(x.UpBps)
 			}
-			blameDown, blameUp = d >= u, u > d
+			switch {
+			case ackUp:
+				blameDown = true
+			case ackDown:
+				blameUp = true
+			default:
+				blameDown, blameUp = d >= u, u > d
+			}
 		}
 		if blameDown && x.Delay > l.Down.p.Delay {
-			down = l.Down.overload(x.At, x.DownBps, x.Delay)
+			down = l.Down.overload(x.At, x.DownBps, x.Delay, confirmed)
 		}
 		if blameUp && x.Delay > l.Up.p.Delay {
-			up = l.Up.overload(x.At, x.UpBps, x.Delay)
+			up = l.Up.overload(x.At, x.UpBps, x.Delay, confirmed)
 		}
 		return down, up
 	}
+	l.bloated = 0
 	if x.Delay <= l.Down.p.Delay/2 {
 		down = l.Down.headroom(x.At, d)
 	}
@@ -199,6 +243,18 @@ type Shaper struct {
 	// скорость канала каждые несколько раундов («пила»).
 	bloatAt   uint64
 	bloatTime time.Time
+	// fullAt — когда трафик в последний раз упирался в очередь.
+	fullAt time.Time
+}
+
+// fullRecent — столько после упора в очередь прошедший трафик ещё считается
+// скоростью канала: канал стал медленнее под той же нагрузкой.
+const fullRecent = 10 * time.Second
+
+func (s *Shaper) noteFull(at time.Time, load float64) {
+	if s.base != 0 && load >= s.p.Saturated {
+		s.fullAt = at
+	}
 }
 
 // probeEvery — у самой отметки прошлой задержки очередь стоит столько, прежде
@@ -277,12 +333,16 @@ func (s *Shaper) load(bps uint64) float64 {
 // опускается ниже того, что канал реально пропустил. Оценка по одному
 // моменту ненадёжна (на разгоне занижена, пока наполняется буфер
 // провайдера — завышена), поэтому снижение повторяется, пока задержка
-// держится, а рост в headroom быстро исправляет перебор.
-func (s *Shaper) overload(at time.Time, bps uint64, delay time.Duration) string {
+// держится, а рост в headroom быстро исправляет перебор. Без confirmed
+// (задержка — первый раунд) база не учится и не опускается, шаг — один Cut.
+func (s *Shaper) overload(at time.Time, bps uint64, delay time.Duration, confirmed bool) string {
 	if bps < s.p.MinRate {
 		return ""
 	}
 	if s.base == 0 {
+		if !confirmed {
+			return ""
+		}
 		// Без ограничения очередь у нас не копится: рост задержки при
 		// заметном трафике — канал заполнен.
 		s.base, s.basis, s.frac, s.lastChange = bps, BasisPassive, s.p.Cut, at
@@ -292,13 +352,23 @@ func (s *Shaper) overload(at time.Time, bps uint64, delay time.Duration) string 
 		return ""
 	}
 	rate := s.Rate()
-	s.bloatAt, s.bloatTime = rate, at
+	// Отметка — что канал пропустил, а не скорость очереди: устаревшая
+	// очередь бывает вдвое выше канала.
+	s.bloatAt, s.bloatTime = min(rate, bps), at
 	target := uint64(float64(min(rate, bps)) * s.p.Cut)
+	// До прошедшего — только если канал был полон: трафик заметен рядом с
+	// базой или только что упирался в очередь. Иначе прошедшее — спрос, а
+	// не канал (сотни соединений стартуют разом и на секунды забивают
+	// буфер провайдера, пока канал почти пуст), — снижение шагами.
+	full := bps*3 >= s.base || at.Sub(s.fullAt) <= fullRecent
+	if !confirmed || !full {
+		target = max(target, uint64(float64(rate)*s.p.Cut))
+	}
 	frac := float64(target) / float64(s.base)
 	switch {
 	case frac >= s.p.Min:
 		s.frac = frac
-	case s.basis.movable():
+	case confirmed && s.basis.movable():
 		// Ниже предела процента — значит, канал медленнее оценки базы:
 		// опускается сама оценка (предел — от неё).
 		s.frac = s.p.Min
@@ -322,8 +392,9 @@ func (s *Shaper) headroom(at time.Time, load float64) string {
 	rate := s.Rate()
 	step, grow := s.p.StepUp, s.p.BaseGrow
 	switch {
-	case s.bloatAt != 0 && at.Sub(s.bloatTime) >= forgetBloat:
-		// Давно без задержки — канал мог стать быстрее, отметка устарела.
+	case s.bloatAt != 0 && (at.Sub(s.bloatTime) >= forgetBloat || float64(rate) > float64(s.bloatAt)*1.10):
+		// Давно без задержки или очередь уже заметно выше отметки без
+		// задержки — канал стал быстрее, отметка устарела.
 		s.bloatAt = 0
 	case s.bloatAt != 0 && float64(rate) >= float64(s.bloatAt)*0.98 && at.Sub(s.bloatTime) < probeEvery:
 		return ""
