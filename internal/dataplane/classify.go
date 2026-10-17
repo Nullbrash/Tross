@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tross/core/decision"
+	coredns "tross/core/dns"
 	"tross/core/model"
 	"tross/core/profile"
 	"tross/core/sqm"
@@ -49,6 +50,9 @@ type ClassRule struct {
 	Networks  []netip.Prefix
 	Sources   []netip.Addr
 	DomainSet SetName // адреса доменов (наполняет резолвер)
+	// Domains — домены множества правила пользователя или части профиля
+	// (у множеств списков домены — в списках).
+	Domains   []string
 	Signature string
 }
 
@@ -98,7 +102,7 @@ func CompileClassify(classes []model.TrafficClass, policies map[model.TrafficCla
 		r := ruleFromMatch(u.Name, known(u.Class), "", u.Match)
 		r.Sources = u.Devices
 		if len(u.Match.Domains) > 0 {
-			r.DomainSet = SetName(fmt.Sprintf("tross_du%d", i))
+			r.DomainSet, r.Domains = SetName(fmt.Sprintf("tross_du%d", i)), u.Match.Domains
 		}
 		c.Rules = append(c.Rules, r)
 	}
@@ -128,7 +132,7 @@ func CompileClassify(classes []model.TrafficClass, policies map[model.TrafficCla
 				}
 				r := ruleFromMatch(s.ID+"/"+p.ID, known(p.Class), svc, m)
 				if len(m.Domains) > 0 {
-					r.DomainSet = SetName(fmt.Sprintf("tross_dp_%s_%s_%d", ident(s.ID), ident(p.ID), j))
+					r.DomainSet, r.Domains = SetName(fmt.Sprintf("tross_dp_%s_%s_%d", ident(s.ID), ident(p.ID), j)), m.Domains
 				}
 				alts = append(alts, alt{rule: r, match: m, score: 10 * specificity(m)})
 			}
@@ -180,6 +184,30 @@ const setBTPeers SetName = "tross_btpeer4"
 
 func listSet(layer string, cl model.TrafficClass) SetName {
 	return SetName("tross_l" + layer + "_" + ident(string(cl)))
+}
+
+// ListSet — множество доменов класса из списков слоя; у выученных и
+// встроенных своих множеств классов нет ("").
+func ListSet(layer model.RuleLayer, cl model.TrafficClass) SetName {
+	switch layer {
+	case model.LayerManual:
+		return listSet("m", cl)
+	case model.LayerOnline:
+		return listSet("a", cl)
+	}
+	return ""
+}
+
+// DomainSpecs — множества правил пользователя и частей профилей с их
+// доменами: что резолвер кладёт куда.
+func (c Classify) DomainSpecs() []coredns.SetSpec {
+	var out []coredns.SetSpec
+	for _, r := range c.Rules {
+		if r.DomainSet != "" && len(r.Domains) > 0 {
+			out = append(out, coredns.SetSpec{Name: string(r.DomainSet), Domains: r.Domains})
+		}
+	}
+	return out
 }
 
 func specificity(m profile.Match) int {
@@ -259,6 +287,9 @@ func renderClassifySets(c Classify, links []LinkSpec) string {
 	var b strings.Builder
 	for _, s := range c.domainSets() {
 		fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t}\n", s)
+	}
+	for i := range links {
+		fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t}\n", DomainLinkSet(i))
 	}
 	if slices.Contains(c.Classes, model.ClassBulk) {
 		fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr . inet_service\n\t\tflags dynamic,timeout\n\t\ttimeout %ds\n\t}\n", setBTPeers, int(btPeerTTL/time.Second))
@@ -415,6 +446,22 @@ func renderPlan(c Classify, links []LinkSpec, plan []decision.ClassPlan) string 
 				if !slices.Contains(p.PinLinks, l.Link.ID) {
 					fmt.Fprintf(&b, "flush set inet %s %s\n", nftTable, set(i))
 				}
+			}
+		}
+		// Канал, выбранный резолвером при DNS-запросе (DNS тем же путём, что
+		// и трафик), — только среди долей плана: адрес упавшего канала уходит
+		// по долям. При одной доле выбирать нечего.
+		if len(p.Shares) > 1 {
+			for _, s := range p.Shares {
+				i := idx(s.Link)
+				if i < 0 || s.Weight <= 0 {
+					continue
+				}
+				remember := ""
+				if set != nil {
+					remember = fmt.Sprintf(" update @%s { %s }", set(i), key)
+				}
+				fmt.Fprintf(&b, "add rule inet %s %s ip daddr @%s meta mark set %#x%s goto commit\n", nftTable, name, DomainLinkSet(i), links[i].FwMark|mark, remember)
 			}
 		}
 		pick := pickExpr(links, p.Shares, mark)

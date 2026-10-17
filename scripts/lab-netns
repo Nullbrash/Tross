@@ -153,11 +153,23 @@ start_servers() {
 			pid-file=$STATE/dnsmasq.pid
 		EOF
 		nsx tl-inet dnsmasq --conf-file="$STATE/dnsmasq.conf"
+		# Запасной резолвер «мини-ПК» (на мини-ПК — своя программа на том же
+		# месте): ему уходят DNS-запросы дома, пока демона нет.
+		cat > "$STATE/dnsmasq-fallback.conf" <<-EOF
+			listen-address=192.168.77.1
+			port=5335
+			bind-interfaces
+			no-resolv
+			no-hosts
+			address=/#/$SRV_IP
+			pid-file=$STATE/dnsmasq-fallback.pid
+		EOF
+		nsx tl-tross dnsmasq --conf-file="$STATE/dnsmasq-fallback.conf"
 	fi
 }
 
 stop_servers() {
-	for p in labsrv labsrv-peers labsrv-video iperf3 dnsmasq; do
+	for p in labsrv labsrv-peers labsrv-video iperf3 dnsmasq dnsmasq-fallback; do
 		[ -f "$STATE/$p.pid" ] && kill "$(cat "$STATE/$p.pid")" 2>/dev/null || true
 		rm -f "$STATE/$p.pid"
 	done
@@ -195,7 +207,7 @@ cmd_status() {
 		nsx "$(ns_of "$l")" tc qdisc show dev cpe | sed 's/^/   /'
 	done
 	echo "== servers"
-	for p in labsrv labsrv-peers labsrv-video iperf3 dnsmasq; do
+	for p in labsrv labsrv-peers labsrv-video iperf3 dnsmasq dnsmasq-fallback; do
 		if [ -f "$STATE/$p.pid" ] && kill -0 "$(cat "$STATE/$p.pid")" 2>/dev/null; then echo "   $p running"; else echo "   $p not running"; fi
 	done
 }

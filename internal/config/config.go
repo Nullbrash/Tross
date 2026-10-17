@@ -230,6 +230,18 @@ type DNS struct {
 	// Race — сколько серверов быстрого набора спрашивать разом.
 	Race      int       `yaml:"race"`
 	Sensitive Sensitive `yaml:"sensitive"`
+	// Fallback — запасной резолвер на мини-ПК (отдельная программа): ему
+	// уходят DNS-запросы дома, пока демона нет.
+	Fallback netip.AddrPort `yaml:"fallback"`
+	// Devices — свой режим DNS устройства (остальным — devices.default_dns_mode).
+	Devices []DNSDevice `yaml:"devices"`
+	// CAFile — дополнительные корни для DoH/DoT (свой сервер, стенд).
+	CAFile string `yaml:"ca_file"`
+}
+
+type DNSDevice struct {
+	Address netip.Addr    `yaml:"address"`
+	Mode    model.DNSMode `yaml:"mode"`
 }
 
 // Upstream — https://… (DoH) или tls://хост[:порт] (DoT).

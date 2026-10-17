@@ -31,7 +31,13 @@ type explainer struct {
 	policies map[model.TrafficClass]model.Policy
 }
 
-func newExplainer(cfg *config.Config, cat profile.Catalog, bal *balancer, dp dataplane.Dataplane) (*explainer, error) {
+func newExplainer(cfg *config.Config, cls *classify.Engine, bal *balancer, dp dataplane.Dataplane) *explainer {
+	return &explainer{cls: cls, eng: bal.engine, plan: bal.applied, dp: dp, policies: cfg.Policies()}
+}
+
+// newClassifier — тот же классификатор, по которому собраны правила ядра:
+// им объясняются решения и выбирается канал домена при DNS-запросе.
+func newClassifier(cfg *config.Config, cat profile.Catalog) (*classify.Engine, error) {
 	var rules []classify.Rule
 	for _, r := range cfg.Classify.Rules {
 		var devs []string
@@ -40,12 +46,7 @@ func newExplainer(cfg *config.Config, cat profile.Catalog, bal *balancer, dp dat
 		}
 		rules = append(rules, classify.Rule{Name: r.Name, Class: r.Class, Devices: devs, Match: r.Match})
 	}
-	// Доменных списков до резолвера (этап 4) нет.
-	cls, err := classify.New(classify.Config{Rules: rules, Catalog: cat})
-	if err != nil {
-		return nil, err
-	}
-	return &explainer{cls: cls, eng: bal.engine, plan: bal.applied, dp: dp, policies: cfg.Policies()}, nil
+	return classify.New(classify.Config{Rules: rules, Catalog: cat})
 }
 
 func (x *explainer) explain(ctx context.Context, f model.Flow) (api.Explanation, error) {

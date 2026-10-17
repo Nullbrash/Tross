@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -95,9 +96,18 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	expl, err := newExplainer(cfg, cat, bal, dp)
+	cls, err := newClassifier(cfg, cat)
 	if err != nil {
 		return fmt.Errorf("classifier: %w", err)
+	}
+	expl := newExplainer(cfg, cls, bal, dp)
+	// В «сухом» режиме резолвер не слушает: на машине разработчика сеть
+	// не трогается.
+	var dnsSvc *dnsService
+	if !cfg.Daemon.DryRun {
+		if dnsSvc, err = newDNSService(cfg, log, dp, bus, spec, cat, cls, bal.applied); err != nil {
+			return fmt.Errorf("dns: %w", err)
+		}
 	}
 
 	srv := &http.Server{
@@ -138,6 +148,9 @@ func Run(ctx context.Context, opts Options) error {
 	linkEvents, unsubscribeLinks := bus.Subscribe(64, event.TopicLinkState)
 	wg.Go(func() { bal.run(runCtx, linkEvents) })
 	wg.Go(func() { coll.run(runCtx, collectEvery) })
+	if dnsSvc != nil {
+		wg.Go(func() { dnsSvc.run(runCtx) })
+	}
 	if every := sdnotify.WatchdogInterval(); every > 0 {
 		wg.Go(func() { watchdog(runCtx, log, every, mon, cfg.Monitor.Interval) })
 	}
@@ -307,6 +320,16 @@ func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
 	}
 	g := cfg.Inbound.Guard
 	spec.Guard = dataplane.InboundGuard{NewPerMinute: g.NewPerMinute, Burst: g.Burst, MaxConns: g.MaxConnections}
+	if len(cfg.DNS.Listen) > 0 {
+		listen, err := netip.ParseAddrPort(cfg.DNS.Listen[0])
+		if err != nil {
+			return spec, fmt.Errorf("dns.listen: %w", err)
+		}
+		spec.DNS = dataplane.DNSSpec{Listen: listen, Fallback: cfg.DNS.Fallback, Default: cfg.Devices.DefaultDNSMode, Devices: map[netip.Addr]model.DNSMode{}}
+		for _, d := range cfg.DNS.Devices {
+			spec.DNS.Devices[d.Address] = d.Mode
+		}
+	}
 	return spec, nil
 }
 

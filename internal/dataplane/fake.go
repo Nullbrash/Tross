@@ -20,6 +20,7 @@ type Fake struct {
 	conns   []Connection
 	pins    []Pin
 	shaping map[model.LinkID]Shaping
+	elems   []SetElement
 }
 
 var _ Dataplane = (*Fake)(nil)
@@ -72,8 +73,28 @@ func (f *Fake) SetPlan(_ context.Context, plan []decision.ClassPlan) error {
 	return nil
 }
 
-func (f *Fake) AddToSet(_ context.Context, set SetName, addr netip.Addr, ttl time.Duration) error {
-	f.record("add-to-set", set, addr, ttl)
+func (f *Fake) AddToSet(ctx context.Context, set SetName, addr netip.Addr, ttl time.Duration) error {
+	return f.AddToSets(ctx, []SetElement{{Set: set, Addr: addr, Timeout: ttl}})
+}
+
+// AddToSets — не записывается в журнал вызовов поэлементно (DNS-ответов
+// много); элементы видны через Elements.
+func (f *Fake) AddToSets(_ context.Context, elems []SetElement) error {
+	f.mu.Lock()
+	f.elems = append(f.elems, elems...)
+	f.mu.Unlock()
+	return nil
+}
+
+// Elements — всё, что резолвер положил в множества (для тестов).
+func (f *Fake) Elements() []SetElement {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]SetElement(nil), f.elems...)
+}
+
+func (f *Fake) SetDNS(_ context.Context, up bool) error {
+	f.record("set-dns", up)
 	return nil
 }
 

@@ -79,8 +79,11 @@ func TestDefaults(t *testing.T) {
 	if cfg.Proxy.WorkDir != "/var/lib/tross/mihomo" {
 		t.Errorf("proxy work_dir = %q", cfg.Proxy.WorkDir)
 	}
-	if !*cfg.DNS.FirefoxCanaryNXDomain || cfg.Devices.DefaultDNSMode != model.DNSObserve {
+	if !*cfg.DNS.FirefoxCanaryNXDomain || cfg.Devices.DefaultDNSMode != model.DNSRedirect {
 		t.Error("dns/devices defaults not applied")
+	}
+	if cfg.DNS.Fallback.String() != "192.168.1.1:5335" {
+		t.Errorf("fallback resolver = %s, want the listen address, port 5335", cfg.DNS.Fallback)
 	}
 	// -data-dir переносит и выведенные из каталога умолчания.
 	cfg.SetDataDir("/srv/tross")

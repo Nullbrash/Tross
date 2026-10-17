@@ -12,7 +12,6 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -102,7 +101,9 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	// До первого плана — каждому классу первый разрешённый канал по приоритету.
 	c := spec.Classify.withDefault()
 	s.plan = initialPlan(c, spec.Links, s.routed)
-	if err := runNft(ctx, renderNAT(spec)+renderBase(spec)+renderPlan(c, spec.Links, s.plan)); err != nil {
+	// Перехват DNS — пока на запасной резолвер: резолвер демона ещё не
+	// слушает, на него переключит SetDNS.
+	if err := runNft(ctx, renderNAT(spec)+renderDNS(spec, false)+renderBase(spec)+renderPlan(c, spec.Links, s.plan)); err != nil {
 		return fail(err)
 	}
 	// Очереди — качество, а не связь: без них сеть работает, поэтому ошибка
@@ -137,6 +138,9 @@ func validateSpec(spec Spec) error {
 		return errors.New("dataplane: too many links")
 	}
 	if err := validateForwards(spec); err != nil {
+		return fmt.Errorf("dataplane: %w", err)
+	}
+	if err := validateDNS(spec.DNS); err != nil {
 		return fmt.Errorf("dataplane: %w", err)
 	}
 	return nil
@@ -300,8 +304,13 @@ func Cleanup(ctx context.Context, log *slog.Logger, spec Spec, purge bool) error
 func (s *System) cleanupLocked(ctx context.Context, purge bool) error {
 	var errs []error
 	script := fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftTable, nftTable)
+	if !purge {
+		// DNS дома без демона — запасному резолверу (D-19).
+		script += renderDNS(s.spec, false)
+	}
 	if purge {
 		script += fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftNATTable, nftNATTable)
+		script += fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftDNSTable, nftDNSTable)
 		// Очереди переживают остановку демона (как NAT) — снимает их только purge.
 		s.shaping = map[model.LinkID]Shaping{}
 		for i, l := range s.spec.Links {
@@ -395,20 +404,6 @@ func (s *System) linkLocked(id model.LinkID) (LinkSpec, bool) {
 		}
 	}
 	return LinkSpec{}, false
-}
-
-func (s *System) AddToSet(ctx context.Context, set SetName, addr netip.Addr, ttl time.Duration) error {
-	s.mu.Lock()
-	known := set == SetDPI || set == SetProxy || slices.Contains(s.spec.Classify.domainSets(), set)
-	s.mu.Unlock()
-	if !known {
-		return fmt.Errorf("dataplane: unknown set %q", set)
-	}
-	if !addr.Is4() {
-		return fmt.Errorf("dataplane: %s is not IPv4", addr)
-	}
-	sec := max(int64(ttl/time.Second), 1)
-	return runNft(ctx, renderAddElement(set, addr.String(), sec))
 }
 
 func (s *System) FlushConntrack(_ context.Context, id model.LinkID) error {

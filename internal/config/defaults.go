@@ -152,6 +152,12 @@ func (c *Config) applyDefaults() {
 		d.Upstreams = DefaultUpstreams()
 	}
 	orDefault(&d.Race, 2)
+	if !d.Fallback.IsValid() && len(d.Listen) > 0 {
+		// Запасной резолвер — на том же адресе, порт 5335.
+		if ap, err := netip.ParseAddrPort(d.Listen[0]); err == nil {
+			d.Fallback = netip.AddrPortFrom(ap.Addr(), 5335)
+		}
+	}
 	if d.Sensitive.Services == nil && d.Sensitive.Domains == nil {
 		def := DefaultSensitive()
 		d.Sensitive.Services, d.Sensitive.Domains = def.Services, def.Domains
@@ -188,5 +194,7 @@ func (c *Config) applyDefaults() {
 	if c.Devices.NotifyNew == nil {
 		c.Devices.NotifyNew = ptr(true)
 	}
-	orDefault(&c.Devices.DefaultDNSMode, model.DNSObserve)
+	// Обычный DNS (53) на чужие серверы — к резолверу; DoT и DoH не
+	// перехватываются в любом режиме, кроме block.
+	orDefault(&c.Devices.DefaultDNSMode, model.DNSRedirect)
 }

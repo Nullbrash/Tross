@@ -194,7 +194,7 @@ func TestRace(t *testing.T) {
 
 func TestCache(t *testing.T) {
 	c := NewCache(DefaultCacheParams(2))
-	k := Key{"example.com", 1}
+	k := Key{Name: "example.com", Type: 1}
 	e := Entry{Addrs: []netip.Addr{netip.MustParseAddr("192.0.2.1")}, TTL: 100 * time.Second, Stored: t0}
 	if c.Get(k, t0).State != Miss {
 		t.Fatal("empty cache hit")
@@ -220,11 +220,11 @@ func TestCache(t *testing.T) {
 		t.Errorf("past stale window: %+v", h)
 	}
 	// LRU: третья запись вытесняет самую давнюю.
-	c.Put(Key{"a", 1}, e)
-	c.Put(Key{"b", 1}, e)
-	c.Get(Key{"a", 1}, t0)
-	c.Put(Key{"c", 1}, e)
-	if c.Get(Key{"b", 1}, t0).State != Miss || c.Get(Key{"a", 1}, t0).State != Fresh || c.Len() != 2 {
+	c.Put(Key{Name: "a", Type: 1}, e)
+	c.Put(Key{Name: "b", Type: 1}, e)
+	c.Get(Key{Name: "a", Type: 1}, t0)
+	c.Put(Key{Name: "c", Type: 1}, e)
+	if c.Get(Key{Name: "b", Type: 1}, t0).State != Miss || c.Get(Key{Name: "a", Type: 1}, t0).State != Fresh || c.Len() != 2 {
 		t.Error("LRU eviction")
 	}
 }
@@ -288,5 +288,22 @@ func TestSensitiveFallback(t *testing.T) {
 	}
 	if got := pf.Plan("web.telegram.org", "isp2", at); got.Fallback {
 		t.Errorf("other link is healthy, no fallback: %+v", got)
+	}
+}
+
+// Участники, различающиеся последним символом, делят ключи поровну (у
+// голого FNV один выигрывал почти всегда).
+func TestScoreSpreadsSimilarNames(t *testing.T) {
+	wins := map[string]int{}
+	for i := range 1000 {
+		key := fmt.Sprintf("site%d.com", i)
+		if Score(key, "isp1") > Score(key, "isp2") {
+			wins["isp1"]++
+		} else {
+			wins["isp2"]++
+		}
+	}
+	if wins["isp1"] < 400 || wins["isp2"] < 400 {
+		t.Errorf("uneven: %v", wins)
 	}
 }

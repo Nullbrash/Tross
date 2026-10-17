@@ -108,10 +108,8 @@ func TestFirstByPriority(t *testing.T) {
 		t.Fatalf("nothing routed: %v", got)
 	}
 }
-func TestRenderAddElementAndIfname(t *testing.T) {
-	if got := renderAddElement(SetDPI, "203.0.113.5", 300); got != "add element inet tross tross_dpi4 { 203.0.113.5 timeout 300s }\n" {
-		t.Fatalf("element = %q", got)
-	}
+
+func TestValidIfname(t *testing.T) {
 	for name, ok := range map[string]bool{"wan1": true, "enp2s0": true, "": false, `a"b`: false, "a b": false, "0123456789abcdef": false} {
 		if validIfname(name) != ok {
 			t.Errorf("validIfname(%q) != %v", name, ok)

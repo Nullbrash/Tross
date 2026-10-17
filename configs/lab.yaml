@@ -46,3 +46,7 @@ classes:
 
 dns:
   listen: ["192.168.77.1:53"]
+  # «Интернет» стенда — DoH labsrv с самоподписанным корнем (lab-netns);
+  # запасной резолвер — по умолчанию 192.168.77.1:5335 (dnsmasq lab-netns).
+  upstreams: [{ name: lab, url: "https://203.0.113.53/dns-query", pools: [protected, fast] }]
+  ca_file: /run/tross-lab/doh-ca.pem

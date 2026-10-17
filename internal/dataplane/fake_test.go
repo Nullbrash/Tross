@@ -24,13 +24,13 @@ func TestFakeRecordsOps(t *testing.T) {
 	_ = f.Teardown(ctx)
 
 	ops := f.Ops()
-	if len(ops) != 4 {
+	if len(ops) != 3 || len(f.Elements()) != 1 {
 		t.Fatalf("ops = %q", ops)
 	}
 	if !strings.Contains(ops[0], "table=101") || !strings.Contains(ops[0], "mark=0x100") {
 		t.Errorf("link op = %q", ops[0])
 	}
-	if ops[3] != "teardown" {
-		t.Errorf("last op = %q, want teardown", ops[3])
+	if ops[2] != "teardown" {
+		t.Errorf("last op = %q, want teardown", ops[2])
 	}
 }

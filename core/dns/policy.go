@@ -191,10 +191,21 @@ func (p *Policy) race(link model.LinkID, now time.Time) []string {
 	return usable[:min(p.p.Race, len(usable))]
 }
 
-func weight(key, server string) uint64 {
+func weight(key, server string) uint64 { return Score(key, server) }
+
+// Score — вес пары «ключ + участник» для rendezvous hashing, одинаковый
+// между перезапусками. Перемешивание (splitmix64) обязательно: у FNV
+// участники, различающиеся последним символом (isp1/isp2, cloudflare-2),
+// почти не расходятся в старших битах — один выигрывал бы всегда.
+func Score(key, member string) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(key))
 	h.Write([]byte{0})
-	h.Write([]byte(server))
-	return h.Sum64()
+	h.Write([]byte(member))
+	x := h.Sum64()
+	x ^= x >> 30
+	x *= 0xbf58476d1ce4e5b9
+	x ^= x >> 27
+	x *= 0x94d049bb133111eb
+	return x ^ x>>31
 }

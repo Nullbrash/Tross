@@ -23,14 +23,7 @@ import (
 // первый план уже применён.
 func explainBench(t *testing.T) (*explainer, *dataplane.Fake, *balancer) {
 	t.Helper()
-	path := "../../configs/example.yaml"
-	if _, err := os.Stat(path); err != nil {
-		path = "configs/example.yaml" // lab-itest запускает тесты из корня репозитория
-	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := exampleCfg(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var links []model.Link
 	for _, l := range cfg.Links {
@@ -46,10 +39,11 @@ func explainBench(t *testing.T) (*explainer, *dataplane.Fake, *balancer) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	x, err := newExplainer(cfg, cat, b, dp)
+	cls, err := newClassifier(cfg, cat)
 	if err != nil {
 		t.Fatal(err)
 	}
+	x := newExplainer(cfg, cls, b, dp)
 	mon.Tick()
 	b.apply(context.Background())
 	return x, dp, b
@@ -135,4 +129,19 @@ func TestExplainBeforeFirstPlan(t *testing.T) {
 	if err != nil || ex.Link != "" || !strings.HasPrefix(ex.Reason, "no plan yet") {
 		t.Errorf("explain = %+v, %v", ex, err)
 	}
+}
+
+// exampleCfg — configs/example.yaml и из каталога пакета (go test), и из
+// корня репозитория (lab-itest).
+func exampleCfg(t *testing.T) *config.Config {
+	t.Helper()
+	path := "../../configs/example.yaml"
+	if _, err := os.Stat(path); err != nil {
+		path = "configs/example.yaml"
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
 }

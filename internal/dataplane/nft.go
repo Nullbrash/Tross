@@ -90,10 +90,6 @@ func firstByPriority(links []LinkSpec, routed map[model.LinkID]bool) []decision.
 	return nil
 }
 
-func renderAddElement(set SetName, addr string, ttlSec int64) string {
-	return fmt.Sprintf("add element inet %s %s { %s timeout %ds }\n", nftTable, set, addr, ttlSec)
-}
-
 // quote — имя интерфейса как строковый литерал nft. Имена приходят из
 // проверенного конфига, но кавычки и обратная косая черта всё равно недопустимы.
 func quote(s string) string { return `"` + s + `"` }

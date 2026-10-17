@@ -10,6 +10,7 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"time"
 
@@ -46,7 +47,21 @@ type Spec struct {
 	// Forwards — ручные пробросы портов; Guard — их общая защита.
 	Forwards []PortForward
 	Guard    InboundGuard
+	// DNS — перехват DNS домашней сети (резолвер демона, запасной).
+	DNS DNSSpec
 }
+
+// SetElement — адрес в множество ядра на срок.
+type SetElement struct {
+	Set     SetName
+	Addr    netip.Addr
+	Timeout time.Duration
+}
+
+// DomainLinkSet — адреса доменов, чей канал выбран при DNS-запросе (DNS тем
+// же путём, что и трафик): цепочки классов соблюдают его после закреплений и
+// раньше долей. i — номер канала в Spec.Links.
+func DomainLinkSet(i int) SetName { return SetName(fmt.Sprintf("tross_dl%d", i)) }
 
 // Dataplane — всё, что демон меняет в сетевом стеке ядра.
 // Teardown обязан снимать всё, что поставил Setup, кроме NAT: при остановке
@@ -62,8 +77,13 @@ type Dataplane interface {
 	// SetPlan задаёт распределение и закрепления по классам (Engine.Plan);
 	// классы, которых нет в плане, сохраняют прежнее.
 	SetPlan(ctx context.Context, plan []decision.ClassPlan) error
-	// AddToSet кладёт адрес в множество с таймаутом (обычно — по TTL DNS-ответа).
-	AddToSet(ctx context.Context, set SetName, addr netip.Addr, ttl time.Duration) error
+	// AddToSets кладёт адреса в множества с таймаутом одной транзакцией —
+	// резолвер ждёт её, прежде чем ответить клиенту (D-16), поэтому без
+	// запуска nft на каждый ответ.
+	AddToSets(ctx context.Context, elems []SetElement) error
+	// SetDNS переключает перехват DNS: up — резолвер демона отвечает; иначе
+	// запросы дома — запасному резолверу. Без DNSSpec — ничего.
+	SetDNS(ctx context.Context, up bool) error
 	// FlushConntrack сбрасывает соединения, закреплённые за упавшим каналом.
 	FlushConntrack(ctx context.Context, id model.LinkID) error
 	// RepairRoutes ставит заново маршруты таблиц каналов, если их нет или

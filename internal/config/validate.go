@@ -370,6 +370,28 @@ func (c *Config) validateDNS(p *problems) {
 			p.add("dns.sensitive.services", "unknown service or part %q", s)
 		}
 	}
+	if d.Fallback.IsValid() {
+		if !d.Fallback.Addr().Is4() {
+			p.add("dns.fallback", "%s: only IPv4 is supported", d.Fallback)
+		}
+		if slices.Contains(d.Listen, d.Fallback.String()) {
+			p.add("dns.fallback", "%s is the daemon's own listen address", d.Fallback)
+		}
+	}
+	seenDev := map[netip.Addr]bool{}
+	for i, dev := range d.Devices {
+		f := fmt.Sprintf("dns.devices[%d]", i)
+		if !dev.Address.Is4() {
+			p.add(f+".address", "%s: want an IPv4 address", dev.Address)
+		}
+		if seenDev[dev.Address] {
+			p.add(f+".address", "duplicate %s", dev.Address)
+		}
+		seenDev[dev.Address] = true
+		if !dev.Mode.Valid() {
+			p.add(f+".mode", "want observe, redirect, block or exempt, got %q", dev.Mode)
+		}
+	}
 	for _, s := range d.Sensitive.Domains {
 		if n, err := lists.NormalizeName(s); err != nil || n != s {
 			p.add("dns.sensitive.domains", "%q: want a normalized domain (lowercase, punycode)", s)
