@@ -1,0 +1,83 @@
+package config
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+func TestDNSValidation(t *testing.T) {
+	for name, tc := range map[string]struct{ yaml, want string }{
+		"unknown backup": {
+			yaml: minimal + "  upstreams: [{ name: a, url: 'https://1.1.1.1/dns-query', pools: [protected, fast], backup: zz }]\n",
+			want: "unknown backup",
+		},
+		"no protected pool": {
+			yaml: minimal + "  upstreams: [{ name: a, url: 'https://1.1.1.1/dns-query', pools: [fast] }]\n",
+			want: "both protected and fast",
+		},
+		"bad pool": {
+			yaml: minimal + "  upstreams: [{ name: a, url: 'https://1.1.1.1/dns-query', pools: [protected, fast, slow] }]\n",
+			want: "unknown pool",
+		},
+		"unknown sensitive service": {
+			yaml: minimal + "  sensitive: { services: [stem] }\n",
+			want: "dns.sensitive.services",
+		},
+		"unknown sensitive part": {
+			yaml: minimal + "  sensitive: { services: [steam/shop] }\n",
+			want: "dns.sensitive.services",
+		},
+		"sensitive domain not normalized": {
+			yaml: minimal + "  sensitive: { domains: [Telegram.org] }\n",
+			want: "dns.sensitive.domains",
+		},
+		"mrs format": {
+			yaml: minimal + "lists:\n  sources:\n    - { id: m, url: 'https://x/y.mrs', format: mrs }\n",
+			want: "want text or geosite",
+		},
+	} {
+		_, err := Parse([]byte(tc.yaml))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, tc.want)
+		}
+	}
+	ok := minimal + "  sensitive: { services: [steam/store], domains: [telegram.org] }\n" +
+		"lists:\n  sources:\n    - { id: i, url: 'https://x/geosite.dat', format: geosite, categories: [ru-available-only-inside], purpose: inside }\n" +
+		"    - { id: n, url: 'https://x/n.lst', format: text, purpose: never, disabled: true }\n"
+	if _, err := Parse([]byte(ok)); err != nil {
+		t.Errorf("valid dns/lists rejected: %v", err)
+	}
+}
+
+// Пример конфига повторяет умолчания: иначе пример обещал бы одно, а без
+// раздела dns демон делал бы другое.
+func TestExampleDNSMatchesDefaults(t *testing.T) {
+	cfg, err := Load("../../configs/example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.DNS.Upstreams, DefaultUpstreams()) {
+		t.Errorf("example upstreams differ from defaults:\n%+v\n%+v", cfg.DNS.Upstreams, DefaultUpstreams())
+	}
+	if !reflect.DeepEqual(cfg.DNS.Sensitive, DefaultSensitive()) {
+		t.Errorf("example sensitive differs from defaults")
+	}
+}
+
+func TestSensitiveFallbackSetting(t *testing.T) {
+	cfg, err := Parse([]byte(minimal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DNS.Sensitive.FallbackFast || cfg.DNS.PolicyParams().SensitiveFallback {
+		t.Error("fallback to the fast pool must be off by default")
+	}
+	cfg, err = Parse([]byte(minimal + "  sensitive: { fallback_fast: true }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.DNS.PolicyParams().SensitiveFallback || len(cfg.DNS.Sensitive.Domains) != len(DefaultSensitive().Domains) {
+		t.Errorf("only the switch set: %+v — want default lists kept", cfg.DNS.Sensitive)
+	}
+}

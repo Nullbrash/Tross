@@ -12,6 +12,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	coredns "tross/core/dns"
 	"tross/core/lists"
 	"tross/core/model"
 	"tross/core/profile"
@@ -226,12 +227,31 @@ type DNS struct {
 	SetTTL                TTLRange `yaml:"set_ttl"`
 	FirefoxCanaryNXDomain *bool    `yaml:"firefox_canary_nxdomain"`
 	Watchdog              Watchdog `yaml:"watchdog"`
+	// Race — сколько серверов быстрого набора спрашивать разом.
+	Race      int       `yaml:"race"`
+	Sensitive Sensitive `yaml:"sensitive"`
 }
 
 // Upstream — https://… (DoH) или tls://хост[:порт] (DoT).
 type Upstream struct {
 	Name string `yaml:"name"`
 	URL  string `yaml:"url"`
+	// Pools — в каких наборах сервер основной; пусто — только запасной.
+	Pools []coredns.Pool `yaml:"pools"`
+	// Backup — запасной для доли этого сервера в защищённом наборе.
+	Backup string `yaml:"backup"`
+}
+
+// Sensitive — особо личное: DNS — только защищённым набором, домен
+// закреплён за одним сервером.
+type Sensitive struct {
+	// Services — сервисы каталога профилей ("steam") или их части
+	// ("steam/store").
+	Services []string `yaml:"services"`
+	Domains  []string `yaml:"domains"`
+	// FallbackFast — защищённый набор недоступен целиком: временно спрашивать
+	// быстрый. Выключено — особо личное не открывается, но имена не уходят.
+	FallbackFast bool `yaml:"fallback_fast"`
 }
 
 type TTLRange struct {

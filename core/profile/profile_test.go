@@ -2,6 +2,7 @@ package profile
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 
 	"tross/core/model"
@@ -100,5 +101,30 @@ func TestValidate(t *testing.T) {
 	}
 	if r, err := ParsePortRange(" 27000-27250 "); err != nil || r != (PortRange{27000, 27250}) {
 		t.Errorf("ParsePortRange = %v %v", r, err)
+	}
+}
+
+func TestCatalogDomains(t *testing.T) {
+	cat, err := Builtin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, ok := cat.Domains("steam")
+	if !ok || !slices.Contains(all, "steamcontent.com") || !slices.Contains(all, "steampowered.com") {
+		t.Errorf("steam: %v %v", all, ok)
+	}
+	store, ok := cat.Domains("steam/store")
+	if !ok || slices.Contains(store, "steamcontent.com") || !slices.Contains(store, "steampowered.com") {
+		t.Errorf("steam/store: %v %v", store, ok)
+	}
+	if _, ok := cat.Domains("steam/shop"); ok {
+		t.Error("unknown part found")
+	}
+	if _, ok := cat.Domains("netflix"); ok {
+		t.Error("unknown service found")
+	}
+	off := cat.WithUser([]Service{{ID: "steam", Disabled: true}})
+	if d, ok := off.Domains("steam"); !ok || len(d) != 0 {
+		t.Errorf("disabled service: %v %v — want known, no domains", d, ok)
 	}
 }

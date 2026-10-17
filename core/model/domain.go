@@ -52,20 +52,47 @@ type RuleLayer string
 const (
 	LayerManual  RuleLayer = "manual"
 	LayerLearned RuleLayer = "learned"
+	// LayerBuiltin — списки, поставляемые с Tross («никогда не трогать»):
+	// проверены нами, поэтому важнее чужих онлайн-списков.
+	LayerBuiltin RuleLayer = "builtin"
 	LayerOnline  RuleLayer = "online"
 )
 
-// Rank — меньше значит важнее: ручные правила > выученные > онлайн-списки.
+// Rank — меньше значит важнее: ручные правила > выученные > встроенные >
+// онлайн-списки.
 func (l RuleLayer) Rank() int {
 	switch l {
 	case LayerManual:
 		return 0
 	case LayerLearned:
 		return 1
-	case LayerOnline:
+	case LayerBuiltin:
 		return 2
+	case LayerOnline:
+		return 3
 	}
 	return 100
+}
+
+// ListPurpose — что означает попадание домена в список.
+type ListPurpose string
+
+const (
+	// PurposeBypass — кандидат на обход блокировки; метод (zapret на каком
+	// канале или прокси) демон определяет проверкой.
+	PurposeBypass ListPurpose = "bypass"
+	// PurposeClass — домен относится к классу трафика (Class правила).
+	PurposeClass ListPurpose = "class"
+	// PurposeNever — не уводить в обход и прокси, не подменять: время,
+	// STUN, игровые сети, проверки подключения, push.
+	PurposeNever ListPurpose = "never"
+	// PurposeInside — доступно только изнутри России: не уводить через
+	// зарубежный выход.
+	PurposeInside ListPurpose = "inside"
+)
+
+func (p ListPurpose) Valid() bool {
+	return p == PurposeBypass || p == PurposeClass || p == PurposeNever || p == PurposeInside
 }
 
 func (l RuleLayer) Valid() bool { return l.Rank() < 100 }
@@ -80,6 +107,8 @@ type DomainRule struct {
 	Link    LinkID       `json:"link,omitempty"`
 	ProxyID string       `json:"proxy_id,omitempty"`
 	Class   TrafficClass `json:"class,omitempty"`
+	// Purpose — вид правила; пусто — правило метода (Method) или класса.
+	Purpose ListPurpose `json:"purpose,omitempty"`
 	// Source — "user" или идентификатор источника списка.
 	Source    string    `json:"source"`
 	RecheckAt time.Time `json:"recheck_at,omitzero"`
@@ -107,6 +136,12 @@ func (r DomainRule) Validate() error {
 	}
 	if r.Method == MethodProxy && r.ProxyID == "" {
 		errs = append(errs, errors.New("proxy rule without proxy id"))
+	}
+	if r.Purpose != "" && !r.Purpose.Valid() {
+		errs = append(errs, fmt.Errorf("invalid purpose %q", r.Purpose))
+	}
+	if r.Purpose == PurposeClass && r.Class == "" {
+		errs = append(errs, errors.New("class rule without class"))
 	}
 	return errors.Join(errs...)
 }

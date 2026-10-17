@@ -105,6 +105,32 @@ func Parse(b []byte) (Catalog, error) {
 	return c, c.Validate()
 }
 
+// Domains — домены сервиса ("steam") или его части ("steam/store"); false —
+// такого нет. Выключенный сервис доменов не даёт, но существует.
+func (c Catalog) Domains(ref string) ([]string, bool) {
+	svc, part, _ := strings.Cut(ref, "/")
+	for _, s := range c.Services {
+		if s.ID != svc {
+			continue
+		}
+		var out []string
+		found := part == ""
+		for _, p := range s.Parts {
+			if part != "" && p.ID != part {
+				continue
+			}
+			found = true
+			for _, m := range p.Match {
+				if !s.Disabled {
+					out = append(out, m.Domains...)
+				}
+			}
+		}
+		return out, found
+	}
+	return nil, false
+}
+
 func (c Catalog) Validate() error {
 	var errs []error
 	seen := map[string]bool{}

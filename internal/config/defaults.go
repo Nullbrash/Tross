@@ -149,14 +149,12 @@ func (c *Config) applyDefaults() {
 
 	d := &c.DNS
 	if len(d.Upstreams) == 0 {
-		d.Upstreams = []Upstream{
-			// По IP, а не по имени: DoH/DoT по имени сервера обрывают по SNI.
-			{Name: "cloudflare", URL: "https://1.1.1.1/dns-query"},
-			{Name: "cloudflare-2", URL: "https://1.0.0.1/dns-query"},
-			{Name: "google", URL: "https://8.8.4.4/dns-query"},
-			{Name: "quad9", URL: "https://9.9.9.9/dns-query"},
-			{Name: "quad9-dot", URL: "tls://149.112.112.112"},
-		}
+		d.Upstreams = DefaultUpstreams()
+	}
+	orDefault(&d.Race, 2)
+	if d.Sensitive.Services == nil && d.Sensitive.Domains == nil {
+		def := DefaultSensitive()
+		d.Sensitive.Services, d.Sensitive.Domains = def.Services, def.Domains
 	}
 	if len(d.Bootstrap) == 0 {
 		d.Bootstrap = addrs("1.1.1.1", "8.8.4.4")

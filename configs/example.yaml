@@ -254,52 +254,90 @@ inbound:
     burst: 20                   # …сверх разового всплеска
     max_connections: 32         # одновременных соединений
 
-# DNS-резолвер — этап 4, пока не используется (listen проверяется уже сейчас).
+# DNS-резолвер — этап 4, в работе (сейчас проверяется только конфиг).
+# Наружу — только зашифрованный DNS (DoH https://, DoT tls://) и только по
+# IP: DoH/DoT по имени сервера (cloudflare-dns.com и др.) в России обрывают
+# по SNI. DNS провайдера не используется: он видит имена и подменяет ответы
+# заглушками блокировок.
 dns:
   listen: ["192.168.10.1:53"]
-  upstreams:                        # по умолчанию — список ниже
-    # По IP, а не по имени: с августа 2026 DoH/DoT по имени (dns.google,
-    # cloudflare-dns.com, dns.quad9.net) обрывают по SNI; 8.8.4.4 вместо 8.8.8.8.
-    - { name: cloudflare,   url: "https://1.1.1.1/dns-query" }
-    - { name: cloudflare-2, url: "https://1.0.0.1/dns-query" }
-    - { name: google,       url: "https://8.8.4.4/dns-query" }
-    - { name: quad9,        url: "https://9.9.9.9/dns-query" }
-    - { name: quad9-dot,    url: "tls://149.112.112.112" }
+  # Два набора серверов (по умолчанию — список ниже):
+  #   protected — особо личное (раздел sensitive): серверы вне России без
+  #               журналов; домен всегда идёт к одному серверу (каждый видит
+  #               только свою долю имён), при его отказе — к его backup;
+  #               особо личное никогда не уходит в быстрый набор;
+  #   fast      — всё остальное: гонка race быстрейших, первый ответ с
+  #               адресами побеждает.
+  # Сервер без pools — только запасной (backup) для чужой доли.
+  upstreams:
+    - { name: quad9,            url: "https://9.9.9.9/dns-query", pools: [protected, fast], backup: quad9-unfiltered }
+    - { name: mullvad,          url: "https://194.242.2.2/dns-query", pools: [protected], backup: dnssb }
+    - { name: digitale,         url: "https://185.95.218.42/dns-query", pools: [protected], backup: dnssb }
+    - { name: dns4eu,           url: "tls://86.54.11.100", pools: [protected], backup: dnssb }
+    - { name: quad9-unfiltered, url: "https://9.9.9.10/dns-query" }   # без фильтра вредоносного
+    - { name: dnssb,            url: "https://185.222.222.222/dns-query" }
+    - { name: cloudflare,       url: "https://1.1.1.1/dns-query", pools: [fast] }
+    - { name: cloudflare-2,     url: "https://1.0.0.1/dns-query", pools: [fast] }
+    - { name: google,           url: "https://8.8.4.4/dns-query", pools: [fast] }   # 8.8.8.8 нестабилен
+    # Свой профиль NextDNS (идентификатор — только в своём конфиге):
+    # - { name: nextdns, url: "https://dns.nextdns.io/<ID>", pools: [fast] }
+  race: 2                           # серверов быстрого набора разом
+  # Особо личное: сервисы каталога профилей (или их части — "steam/store") и
+  # домены (с поддоменами). Свой список заменяет этот целиком.
+  sensitive:
+    services: [steam, youtube, discord]
+    domains: [telegram.org, t.me, telegram.me, telegra.ph, tdesktop.com, telesco.pe, cdn-telegram.org,
+              gmail.com, googlemail.com, mail.google.com,
+              proton.me, protonmail.com, outlook.com, hotmail.com, mail.ru, mail.yandex.ru,
+              sberbank.ru, sber.ru, tbank.ru, tinkoff.ru, vtb.ru, alfabank.ru, gazprombank.ru,
+              raiffeisen.ru, open.ru, sovcombank.ru, pochtabank.ru, psbank.ru, mtsbank.ru,
+              rshb.ru, rosbank.ru]
+    # Весь защищённый набор недоступен: true — временно спрашивать быстрый
+    # (имена увидят его серверы); false — особо личное не открывается, пока
+    # защищённый не вернётся.
+    fallback_fast: false
   bootstrap: [1.1.1.1, 8.8.4.4]     # для апстримов, заданных именем
   cache_size: 10000
   set_ttl: { min: 5m, max: 12h }    # пределы таймаута IP в множествах nftables
   firefox_canary_nxdomain: true     # NXDOMAIN на use-application-dns.net
   watchdog: { interval: 5s, failures: 3 }
 
-# Онлайн-списки — этап 4, пока не используются. Нижний слой (ниже ручных и
-# выученных правил).
-# purpose: bypass — кандидаты на обход (метод определит проверка);
+# Онлайн-списки — этап 4, в работе. Нижний слой правил: ручные > выученные >
+# встроенные в Tross («никогда не трогать»: время, STUN, игровые сети,
+# проверки подключения, push) > онлайн.
+# purpose: bypass — кандидаты на обход (метод определит проверка, этапы 5–6);
+#          inside — доступно только изнутри России (не через зарубежный выход);
+#          never  — не уводить в обход и прокси;
 #          class  — домены класса трафика (тогда нужен class).
-# URL — ориентиры, сверить перед этапом 4.
+# format:  text (домен в строке; domain:/full:/keyword:, hosts, ||домен^) или
+#          geosite (v2fly, с categories). disabled: true — источник не грузится.
+# URL — ориентиры, сверить в фазе 3 этапа 4.
 lists:
   update_interval: 24h
   sources:
     - id: itdog-inside
       url: https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst
       format: text
+    - id: runetfreedom-inside
+      url: https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat
+      format: geosite
+      categories: [ru-available-only-inside]
+      purpose: inside
+    # Шире, но больше памяти и лишнего (заблокировано по реестру, а
+    # открывается напрямую):
     - id: antifilter-community
       url: https://community.antifilter.download/list/domains.lst
       format: text
+      disabled: true
     - id: refilter
       url: https://github.com/1andrevich/Re-filter-lists/releases/latest/download/domains_all.lst
       format: text
-    - id: v2fly-streaming
-      url: https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+      disabled: true
+    - id: runetfreedom-blocked
+      url: https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat
       format: geosite
-      categories: [youtube, twitch]
-      purpose: class
-      class: streaming
-      interval: 168h
-    - id: metacubex-youtube
-      url: https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geosite/youtube.mrs
-      format: mrs
-      purpose: class
-      class: streaming
+      categories: [ru-blocked]
+      disabled: true
 
 # Обход DPI (zapret) — этап 5, пока не используется.
 dpi:

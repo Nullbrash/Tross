@@ -1,5 +1,5 @@
-// Package lists — три слоя доменных списков (ручные → выученные → онлайн)
-// и загрузка онлайн-источников (этап 4).
+// Package lists — три слоя доменных списков (ручные → выученные → онлайн,
+// плюс встроенный слой Tross) и загрузка онлайн-источников (этап 4).
 package lists
 
 import (
@@ -15,23 +15,22 @@ type Format string
 const (
 	FormatText    Format = "text"
 	FormatGeosite Format = "geosite"
-	FormatMRS     Format = "mrs"
 )
 
-func (f Format) Valid() bool { return f == FormatText || f == FormatGeosite || f == FormatMRS }
+// Valid — поддерживаемые форматы. Двоичный `.mrs` mihomo не поддерживается:
+// нужен свой распаковщик и разбор его структуры, а те же списки публикуются
+// текстом или geosite.
+func (f Format) Valid() bool { return f == FormatText || f == FormatGeosite }
 
 // Purpose — что означает попадание домена в список.
-type Purpose string
+type Purpose = model.ListPurpose
 
 const (
-	// PurposeBypass — кандидат на обход блокировки; метод (zapret на каком
-	// канале или прокси) демон определяет проверкой.
-	PurposeBypass Purpose = "bypass"
-	// PurposeClass — домен относится к классу трафика (например, streaming).
-	PurposeClass Purpose = "class"
+	PurposeBypass = model.PurposeBypass
+	PurposeClass  = model.PurposeClass
+	PurposeNever  = model.PurposeNever
+	PurposeInside = model.PurposeInside
 )
-
-func (p Purpose) Valid() bool { return p == PurposeBypass || p == PurposeClass }
 
 // Source — онлайн-источник списка доменов.
 type Source struct {
@@ -44,6 +43,8 @@ type Source struct {
 	Categories []string `yaml:"categories" json:"categories,omitempty"`
 	// Interval — свой период обновления; ноль — общий.
 	Interval time.Duration `yaml:"interval" json:"interval,omitempty"`
+	// Disabled — источник известен, но не загружается.
+	Disabled bool `yaml:"disabled" json:"disabled,omitempty"`
 }
 
 // SourceStatus — состояние загрузки источника.

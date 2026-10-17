@@ -70,8 +70,11 @@ func TestDefaults(t *testing.T) {
 	if got := len(cfg.API.AllowedNetworks); got != 2 {
 		t.Errorf("allowed networks = %d, want loopback + LAN", got)
 	}
-	if cfg.Monitor.Interval != 2*time.Second || len(cfg.DNS.Upstreams) != 5 || len(cfg.Monitor.TCPTargets) != 3 || len(cfg.Monitor.WhitelistTargets) != 3 {
+	if cfg.Monitor.Interval != 2*time.Second || len(cfg.DNS.Upstreams) != len(DefaultUpstreams()) || len(cfg.Monitor.TCPTargets) != 3 || len(cfg.Monitor.WhitelistTargets) != 3 {
 		t.Error("monitor/dns defaults not applied")
+	}
+	if cfg.DNS.Race != 2 || len(cfg.DNS.Sensitive.Services) == 0 || len(cfg.DNS.Sensitive.Domains) == 0 {
+		t.Errorf("dns race/sensitive defaults: %d %+v", cfg.DNS.Race, cfg.DNS.Sensitive)
 	}
 	if cfg.Proxy.WorkDir != "/var/lib/tross/mihomo" {
 		t.Errorf("proxy work_dir = %q", cfg.Proxy.WorkDir)

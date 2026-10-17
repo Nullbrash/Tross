@@ -213,3 +213,23 @@ func TestProxyURINotSerialized(t *testing.T) {
 		t.Fatal("proxy URI must never be serialized")
 	}
 }
+
+func TestBuiltinLayerAndPurpose(t *testing.T) {
+	builtin := DomainRule{Pattern: "ntp.org", Match: MatchSuffix, Layer: LayerBuiltin, Purpose: PurposeNever}
+	online := DomainRule{Pattern: "ntp.org", Match: MatchSuffix, Layer: LayerOnline, Purpose: PurposeBypass}
+	learned := DomainRule{Pattern: "ntp.org", Match: MatchSuffix, Layer: LayerLearned, Method: MethodDirect}
+	if !builtin.Precedes(online) || builtin.Precedes(learned) {
+		t.Error("builtin must rank between learned and online")
+	}
+	if err := builtin.Validate(); err != nil {
+		t.Errorf("builtin never rule: %v", err)
+	}
+	for name, r := range map[string]DomainRule{
+		"unknown purpose":     {Pattern: "a.example", Match: MatchSuffix, Layer: LayerOnline, Purpose: "maybe"},
+		"class without class": {Pattern: "a.example", Match: MatchSuffix, Layer: LayerOnline, Purpose: PurposeClass},
+	} {
+		if r.Validate() == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

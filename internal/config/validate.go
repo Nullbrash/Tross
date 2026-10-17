@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	coredns "tross/core/dns"
 	"tross/core/lists"
 	"tross/core/model"
 	"tross/core/profile"
@@ -357,6 +358,40 @@ func (c *Config) validateDNS(p *problems) {
 	if d.Watchdog.Interval <= 0 || d.Watchdog.Failures < 1 {
 		p.add("dns.watchdog", "interval must be positive and failures >= 1")
 	}
+	if _, err := coredns.NewPolicy(d.PolicyUpstreams(), nil, coredns.NewHealth(coredns.DefaultHealthParams()), d.PolicyParams()); err != nil {
+		p.add("dns.upstreams", "%v", err)
+	}
+	cat, err := profile.Builtin()
+	if err == nil {
+		cat = cat.WithUser(c.Classify.Services)
+	}
+	for _, s := range d.Sensitive.Services {
+		if _, ok := cat.Domains(s); !ok {
+			p.add("dns.sensitive.services", "unknown service or part %q", s)
+		}
+	}
+	for _, s := range d.Sensitive.Domains {
+		if n, err := lists.NormalizeName(s); err != nil || n != s {
+			p.add("dns.sensitive.domains", "%q: want a normalized domain (lowercase, punycode)", s)
+		}
+	}
+}
+
+// PolicyParams — настройки выбора серверов для core/dns.
+func (d DNS) PolicyParams() coredns.Params {
+	p := coredns.DefaultParams()
+	p.Race = d.Race
+	p.SensitiveFallback = d.Sensitive.FallbackFast
+	return p
+}
+
+// PolicyUpstreams — серверы для core/dns.
+func (d DNS) PolicyUpstreams() []coredns.Upstream {
+	out := make([]coredns.Upstream, len(d.Upstreams))
+	for i, u := range d.Upstreams {
+		out[i] = coredns.Upstream{Name: u.Name, Pools: u.Pools, Backup: u.Backup}
+	}
+	return out
 }
 
 func (c *Config) validateLists(p *problems) {
@@ -377,13 +412,13 @@ func (c *Config) validateLists(p *problems) {
 			p.add(f+".url", "want http(s) URL, got %q", s.URL)
 		}
 		if !s.Format.Valid() {
-			p.add(f+".format", "want text, geosite or mrs, got %q", s.Format)
+			p.add(f+".format", "want text or geosite, got %q", s.Format)
 		}
 		if s.Format == lists.FormatGeosite && len(s.Categories) == 0 {
 			p.add(f+".categories", "required for geosite format")
 		}
 		switch s.Purpose {
-		case lists.PurposeBypass:
+		case lists.PurposeBypass, lists.PurposeNever, lists.PurposeInside:
 			if s.Class != "" {
 				p.add(f+".class", "only allowed with purpose class")
 			}
@@ -392,7 +427,7 @@ func (c *Config) validateLists(p *problems) {
 				p.add(f+".class", "unknown class %q", s.Class)
 			}
 		default:
-			p.add(f+".purpose", "want bypass or class, got %q", s.Purpose)
+			p.add(f+".purpose", "want bypass, class, never or inside, got %q", s.Purpose)
 		}
 		if s.Interval < 0 {
 			p.add(f+".interval", "must not be negative")
