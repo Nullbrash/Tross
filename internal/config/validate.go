@@ -454,6 +454,34 @@ func (c *Config) validateLists(p *problems) {
 		if s.Interval < 0 {
 			p.add(f+".interval", "must not be negative")
 		}
+		if s.Checksum != "" {
+			if u, err := url.Parse(s.Checksum); err != nil || u.Host == "" || u.Scheme != "https" && u.Scheme != "http" {
+				p.add(f+".checksum", "want http(s) URL, got %q", s.Checksum)
+			}
+		}
+	}
+	for i, r := range c.Lists.Manual {
+		f := fmt.Sprintf("lists.manual[%d]", i)
+		if len(r.Domains) == 0 {
+			p.add(f+".domains", "at least one domain is required")
+		}
+		for _, d := range r.Domains {
+			if n, err := lists.NormalizeName(d); err != nil || n != d {
+				p.add(f+".domains", "%q: want a normalized domain (lowercase, punycode)", d)
+			}
+		}
+		switch r.Purpose {
+		case lists.PurposeBypass, lists.PurposeNever, lists.PurposeInside:
+			if r.Class != "" {
+				p.add(f+".class", "only allowed with purpose class")
+			}
+		case lists.PurposeClass:
+			if !c.classExists(r.Class) {
+				p.add(f+".class", "unknown class %q", r.Class)
+			}
+		default:
+			p.add(f+".purpose", "want bypass, class, never or inside, got %q", r.Purpose)
+		}
 	}
 }
 

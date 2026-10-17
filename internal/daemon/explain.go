@@ -11,12 +11,14 @@ import (
 
 	"tross/core/classify"
 	"tross/core/decision"
+	corelists "tross/core/lists"
 	"tross/core/model"
 	"tross/core/profile"
 	"tross/core/sqm"
 	"tross/internal/api"
 	"tross/internal/config"
 	"tross/internal/dataplane"
+	listload "tross/internal/lists"
 )
 
 // explainer отвечает «почему так»: классифицирует соединение тем же
@@ -37,7 +39,7 @@ func newExplainer(cfg *config.Config, cls *classify.Engine, bal *balancer, dp da
 
 // newClassifier — тот же классификатор, по которому собраны правила ядра:
 // им объясняются решения и выбирается канал домена при DNS-запросе.
-func newClassifier(cfg *config.Config, cat profile.Catalog) (*classify.Engine, error) {
+func newClassifier(cfg *config.Config, cat profile.Catalog, domainRules *corelists.Rules) (*classify.Engine, error) {
 	var rules []classify.Rule
 	for _, r := range cfg.Classify.Rules {
 		var devs []string
@@ -46,7 +48,11 @@ func newClassifier(cfg *config.Config, cat profile.Catalog) (*classify.Engine, e
 		}
 		rules = append(rules, classify.Rule{Name: r.Name, Class: r.Class, Devices: devs, Match: r.Match})
 	}
-	return classify.New(classify.Config{Rules: rules, Catalog: cat})
+	var domains classify.DomainLookup
+	if domainRules != nil {
+		domains = listload.ClassRule(domainRules)
+	}
+	return classify.New(classify.Config{Rules: rules, Catalog: cat, Domains: domains})
 }
 
 func (x *explainer) explain(ctx context.Context, f model.Flow) (api.Explanation, error) {

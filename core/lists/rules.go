@@ -17,7 +17,11 @@ type Rules struct {
 	builtin *Index[model.DomainRule]
 	learned map[ruleKey]model.DomainRule
 	learnIx *Index[model.DomainRule]
-	online  map[string]*Index[model.DomainRule] // по источнику
+	// online — по источнику; значение — общий для источника шаблон (вид,
+	// класс, источник): шаблон домена — ключ индекса. Своя копия правила на
+	// каждый домен стоила ~290 байт — 1,4 млн доменов списка «заблокировано
+	// всё» заняли бы ~400 МБ.
+	online map[string]*Index[*model.DomainRule]
 }
 
 type ruleKey struct {
@@ -29,7 +33,7 @@ func NewRules() *Rules {
 	return &Rules{
 		manual: &Index[model.DomainRule]{}, builtin: &Index[model.DomainRule]{},
 		learned: map[ruleKey]model.DomainRule{}, learnIx: &Index[model.DomainRule]{},
-		online: map[string]*Index[model.DomainRule]{},
+		online: map[string]*Index[*model.DomainRule]{},
 	}
 }
 
@@ -74,14 +78,29 @@ func (r *Rules) SetOnline(source string, rules []model.DomainRule) error {
 		r.mu.Unlock()
 		return nil
 	}
-	for i := range rules {
-		rules[i].Source = source
+	x := &Index[*model.DomainRule]{}
+	var errs []error
+	// Шаблоны по (назначение, класс, метод): у онлайн-источника они общие.
+	templates := map[model.DomainRule]*model.DomainRule{}
+	for i, rule := range rules {
+		rule.Layer, rule.Source = model.LayerOnline, source
+		if err := rule.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("rule %d (%s): %w", i, rule.Pattern, err))
+			continue
+		}
+		key := rule
+		key.Pattern, key.Match = "", ""
+		t := templates[key]
+		if t == nil {
+			t = &key
+			templates[key] = t
+		}
+		x.Add(rule.Pattern, rule.Match, t)
 	}
-	x, err := build(rules, model.LayerOnline)
 	r.mu.Lock()
 	r.online[source] = x
 	r.mu.Unlock()
-	return err
+	return errors.Join(errs...)
 }
 
 // Learn добавляет или заменяет выученное правило (тот же шаблон и способ
@@ -106,13 +125,17 @@ func (r *Rules) Learn(rule model.DomainRule) error {
 // Match — все подходящие правила, самое важное первым (model.DomainRule.Precedes).
 func (r *Rules) Match(domain string) []model.DomainRule {
 	var out []model.DomainRule
-	add := func(v model.DomainRule) { out = append(out, v) }
+	add := func(_ string, _ model.MatchKind, v model.DomainRule) { out = append(out, v) }
 	r.mu.RLock()
 	r.manual.Match(domain, add)
 	r.learnIx.Match(domain, add)
 	r.builtin.Match(domain, add)
 	for _, x := range r.online {
-		x.Match(domain, add)
+		x.Match(domain, func(p string, k model.MatchKind, t *model.DomainRule) {
+			rule := *t
+			rule.Pattern, rule.Match = p, k
+			out = append(out, rule)
+		})
 	}
 	r.mu.RUnlock()
 	slices.SortStableFunc(out, func(a, b model.DomainRule) int {

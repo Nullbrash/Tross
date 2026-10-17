@@ -15,7 +15,7 @@ func TestIndexMatch(t *testing.T) {
 	x.Add("video", model.MatchKeyword, "kw")
 	got := func(d string) []string {
 		var out []string
-		x.Match(d, func(v string) { out = append(out, v) })
+		x.Match(d, func(_ string, _ model.MatchKind, v string) { out = append(out, v) })
 		slices.Sort(out)
 		return out
 	}

@@ -117,7 +117,7 @@ func (p *Policy) Params() Params { return p.p }
 // Sensitive — домен особо личный (защищённый набор).
 func (p *Policy) Sensitive(domain string) bool {
 	found := false
-	p.sensitive.Match(domain, func(struct{}) { found = true })
+	p.sensitive.Match(domain, func(string, model.MatchKind, struct{}) { found = true })
 	return found
 }
 

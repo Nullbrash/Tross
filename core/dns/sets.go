@@ -31,7 +31,7 @@ func NewSetIndex(specs []SetSpec) *SetIndex {
 // Sets — множества домена, без повторов, в порядке добавления.
 func (s *SetIndex) Sets(domain string) []string {
 	var out []string
-	s.x.Match(domain, func(n string) {
+	s.x.Match(domain, func(_ string, _ model.MatchKind, n string) {
 		if !slices.Contains(out, n) {
 			out = append(out, n)
 		}

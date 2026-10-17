@@ -50,7 +50,7 @@ type dnsService struct {
 	pinsAt time.Time
 }
 
-func newDNSService(cfg *config.Config, log *slog.Logger, dp dataplane.Dataplane, bus event.EventBus, spec dataplane.Spec, cat profile.Catalog, cls *classify.Engine, plan func() []decision.ClassPlan) (*dnsService, error) {
+func newDNSService(cfg *config.Config, log *slog.Logger, dp dataplane.Dataplane, bus event.EventBus, spec dataplane.Spec, cat profile.Catalog, cls *classify.Engine, rules *lists.Rules, plan func() []decision.ClassPlan) (*dnsService, error) {
 	s := &dnsService{log: log, dp: dp, bus: bus, every: cfg.DNS.Watchdog.Interval, failures: cfg.DNS.Watchdog.Failures,
 		cls: cls, plan: plan, linkIdx: map[model.LinkID]int{}}
 	for _, l := range cfg.DNS.Listen {
@@ -68,10 +68,6 @@ func newDNSService(cfg *config.Config, log *slog.Logger, dp dataplane.Dataplane,
 	health := coredns.NewHealth(coredns.DefaultHealthParams())
 	pol, err := coredns.NewPolicy(cfg.DNS.PolicyUpstreams(), sensitiveDomains(cfg, cat), health, cfg.DNS.PolicyParams())
 	if err != nil {
-		return nil, err
-	}
-	rules := lists.NewRules()
-	if err := rules.SetBuiltin(lists.Builtin()); err != nil {
 		return nil, err
 	}
 	var roots *x509.CertPool

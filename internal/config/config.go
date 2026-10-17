@@ -279,6 +279,31 @@ type Watchdog struct {
 type Lists struct {
 	UpdateInterval time.Duration  `yaml:"update_interval"`
 	Sources        []lists.Source `yaml:"sources"`
+	// Manual — свои правила: важнее выученных, встроенных и онлайн-списков.
+	Manual []ListRule `yaml:"manual"`
+}
+
+// ListRule — своё правило для доменов (с поддоменами; Exact — только сам).
+type ListRule struct {
+	Domains []string           `yaml:"domains"`
+	Exact   bool               `yaml:"exact"`
+	Purpose lists.Purpose      `yaml:"purpose"`
+	Class   model.TrafficClass `yaml:"class"`
+}
+
+// ManualRules — ручные правила для core/lists.
+func (l Lists) ManualRules() []model.DomainRule {
+	var out []model.DomainRule
+	for _, r := range l.Manual {
+		match := model.MatchSuffix
+		if r.Exact {
+			match = model.MatchExact
+		}
+		for _, d := range r.Domains {
+			out = append(out, model.DomainRule{Pattern: d, Match: match, Purpose: r.Purpose, Class: r.Class, Source: "user"})
+		}
+	}
+	return out
 }
 
 type DPI struct {

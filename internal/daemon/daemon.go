@@ -96,7 +96,14 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	cls, err := newClassifier(cfg, cat)
+	rules, err := domainRules(ctx, cfg, st, log)
+	if err != nil {
+		return fmt.Errorf("domain rules: %w", err)
+	}
+	lists := newListManager(cfg, log, rules, mon, spec)
+	// Кеш — до резолвера: первые же ответы знают онлайн-списки.
+	lists.LoadCache()
+	cls, err := newClassifier(cfg, cat, rules)
 	if err != nil {
 		return fmt.Errorf("classifier: %w", err)
 	}
@@ -105,7 +112,7 @@ func Run(ctx context.Context, opts Options) error {
 	// не трогается.
 	var dnsSvc *dnsService
 	if !cfg.Daemon.DryRun {
-		if dnsSvc, err = newDNSService(cfg, log, dp, bus, spec, cat, cls, bal.applied); err != nil {
+		if dnsSvc, err = newDNSService(cfg, log, dp, bus, spec, cat, cls, rules, bal.applied); err != nil {
 			return fmt.Errorf("dns: %w", err)
 		}
 	}
@@ -151,6 +158,7 @@ func Run(ctx context.Context, opts Options) error {
 	if dnsSvc != nil {
 		wg.Go(func() { dnsSvc.run(runCtx) })
 	}
+	wg.Go(func() { lists.Run(runCtx) })
 	if every := sdnotify.WatchdogInterval(); every > 0 {
 		wg.Go(func() { watchdog(runCtx, log, every, mon, cfg.Monitor.Interval) })
 	}

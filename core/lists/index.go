@@ -49,15 +49,16 @@ func (x *Index[V]) Add(pattern string, kind model.MatchKind, v V) {
 func (x *Index[V]) Len() int { return x.n }
 
 // Match вызывает fn для каждого значения, шаблон которого подходит к
-// нормализованному домену.
-func (x *Index[V]) Match(domain string, fn func(V)) {
+// нормализованному домену (шаблон — ключ таблицы: значению хранить его не
+// нужно).
+func (x *Index[V]) Match(domain string, fn func(pattern string, kind model.MatchKind, v V)) {
 	for _, v := range x.exact[domain] {
-		fn(v)
+		fn(domain, model.MatchExact, v)
 	}
 	if x.suffix != nil {
 		for d := domain; ; {
 			for _, v := range x.suffix[d] {
-				fn(v)
+				fn(d, model.MatchSuffix, v)
 			}
 			i := strings.IndexByte(d, '.')
 			if i < 0 {
@@ -68,7 +69,7 @@ func (x *Index[V]) Match(domain string, fn func(V)) {
 	}
 	for _, k := range x.keywords {
 		if strings.Contains(domain, k.pattern) {
-			fn(k.v)
+			fn(k.pattern, model.MatchKeyword, k.v)
 		}
 	}
 }

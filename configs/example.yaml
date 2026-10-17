@@ -302,7 +302,7 @@ dns:
   firefox_canary_nxdomain: true     # NXDOMAIN на use-application-dns.net
   watchdog: { interval: 5s, failures: 3 }
 
-# Онлайн-списки — этап 4, в работе. Нижний слой правил: ручные > выученные >
+# Онлайн-списки — этап 4. Нижний слой правил: ручные > выученные >
 # встроенные в Tross («никогда не трогать»: время, STUN, игровые сети,
 # проверки подключения, push) > онлайн.
 # purpose: bypass — кандидаты на обход (метод определит проверка, этапы 5–6);
@@ -311,18 +311,33 @@ dns:
 #          class  — домены класса трафика (тогда нужен class).
 # format:  text (домен в строке; domain:/full:/keyword:, hosts, ||домен^) или
 #          geosite (v2fly, с categories). disabled: true — источник не грузится.
-# URL — ориентиры, сверить в фазе 3 этапа 4.
+# checksum: адрес контрольной суммы — большой файл качается, только если
+#          она сменилась. Загрузка — только через исправные неплатные каналы
+#          (не LTE), условным запросом; кеш — в каталоге данных: перезапуск и
+#          недоступный или битый источник работу не ломают.
+# Размеры (2026-10): itdog — 1,2 тыс. доменов (16 КБ); runetfreedom — один
+# geosite на 74 МБ (в «только изнутри» — 167 доменов, «заблокировано» — 75
+# тыс.); antifilter community — 0,5 тыс.; re:filter — 81 тыс. (1,3 МБ).
 lists:
   update_interval: 24h
+  # Свои правила — важнее всех списков (exact: true — без поддоменов):
+  # manual:
+  #   - { domains: [example.org], purpose: bypass }
+  #   - { domains: [kino.example], purpose: class, class: streaming }
   sources:
     - id: itdog-inside
       url: https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-raw.lst
       format: text
+    # «Только изнутри России» — 167 доменов внутри общего файла на 74 МБ
+    # (обновляется несколько раз в сутки); нужен прокси (этап 6) — до него
+    # выключен.
     - id: runetfreedom-inside
       url: https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat
       format: geosite
       categories: [ru-available-only-inside]
       purpose: inside
+      checksum: https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat.sha256sum
+      disabled: true
     # Шире, но больше памяти и лишнего (заблокировано по реестру, а
     # открывается напрямую):
     - id: antifilter-community
@@ -337,6 +352,7 @@ lists:
       url: https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat
       format: geosite
       categories: [ru-blocked]
+      checksum: https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat.sha256sum
       disabled: true
 
 # Обход DPI (zapret) — этап 5, пока не используется.

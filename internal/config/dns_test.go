@@ -109,3 +109,24 @@ func TestDNSDevicesAndFallback(t *testing.T) {
 		t.Errorf("dns: %+v", cfg.DNS)
 	}
 }
+
+func TestListsManual(t *testing.T) {
+	cfg, err := Parse([]byte(minimal + "lists:\n  manual:\n    - { domains: [example.org], purpose: bypass }\n    - { domains: [time.example], exact: true, purpose: never }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := cfg.Lists.ManualRules()
+	if len(rules) != 2 || rules[0].Match != "suffix" || rules[1].Match != "exact" || rules[0].Source != "user" {
+		t.Errorf("manual rules %+v", rules)
+	}
+	for name, tc := range map[string]struct{ yaml, want string }{
+		"class without class": {minimal + "lists:\n  manual:\n    - { domains: [a.example], purpose: class }\n", "lists.manual[0].class"},
+		"bad purpose":         {minimal + "lists:\n  manual:\n    - { domains: [a.example], purpose: maybe }\n", "lists.manual[0].purpose"},
+		"upper case":          {minimal + "lists:\n  manual:\n    - { domains: [A.example], purpose: never }\n", "lists.manual[0].domains"},
+		"bad checksum url":    {minimal + "lists:\n  sources:\n    - { id: x, url: 'https://x/a.lst', format: text, checksum: 'ftp://x' }\n", "checksum"},
+	} {
+		if _, err := Parse([]byte(tc.yaml)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

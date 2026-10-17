@@ -14,6 +14,7 @@ import (
 
 	"tross/core/decision"
 	"tross/core/event"
+	corelists "tross/core/lists"
 	"tross/core/model"
 	"tross/internal/dataplane"
 )
@@ -52,7 +53,7 @@ func dnsRouteBench(t *testing.T, pins []dataplane.Pin) *dnsService {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cls, err := newClassifier(cfg, cat)
+	cls, err := newClassifier(cfg, cat, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,12 +137,12 @@ func TestDNSServiceSwitchesInterception(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	dp := dataplane.NewFake(log)
 	cat, _ := serviceCatalog(cfg)
-	cls, _ := newClassifier(cfg, cat)
+	cls, _ := newClassifier(cfg, cat, nil)
 	spec, err := dataplaneSpec(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := newDNSService(cfg, log, dp, event.NewBus(), spec, cat, cls, func() []decision.ClassPlan { return nil })
+	s, err := newDNSService(cfg, log, dp, event.NewBus(), spec, cat, cls, corelists.NewRules(), func() []decision.ClassPlan { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

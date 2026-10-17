@@ -43,6 +43,9 @@ type Source struct {
 	Categories []string `yaml:"categories" json:"categories,omitempty"`
 	// Interval — свой период обновления; ноль — общий.
 	Interval time.Duration `yaml:"interval" json:"interval,omitempty"`
+	// Checksum — адрес контрольной суммы файла (sha256sum): большой файл
+	// перекачивается, только если она сменилась.
+	Checksum string `yaml:"checksum" json:"checksum,omitempty"`
 	// Disabled — источник известен, но не загружается.
 	Disabled bool `yaml:"disabled" json:"disabled,omitempty"`
 }
