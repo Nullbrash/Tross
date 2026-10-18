@@ -8,6 +8,7 @@
 #   sudo scripts/lab-guard uninstall   убрать службу
 #   scripts/lab-guard status           текущие показания и пороги
 #   sudo GUARD_DRY=1 GUARD_TEMP_STOP=30 scripts/lab-guard check   проверка без действий
+#   sudo GUARD_DRY=1 scripts/lab-guard boot-check   проверка «перезапуск горячим» без действий
 #
 # Журнал: journalctl -t tross-lab-guard (и /var/log/tross-lab-guard.log).
 set -euo pipefail
@@ -22,6 +23,16 @@ LAB_USER=${GUARD_LAB_USER:-tross}
 LAB_NETNS=/home/$LAB_USER/tross/scripts/lab-netns
 NS_ALL=(tl-client tl-tross tl-isp1 tl-isp2 tl-lte tl-inet)
 STATE=/run/tross-lab-guard
+# KEEP — на диске: переживает перезагрузку (последняя температура перед ней).
+KEEP=/var/lib/tross-lab-guard
+# Аппаратный сторож перезагрузки (systemd): только на зависание работающей
+# системы; при выключении — отключён, чтобы выключение по перегреву не
+# превратилось в перезагрузку.
+WATCHDOG_CONF=/etc/systemd/system.conf.d/90-tross-watchdog.conf
+WATCHDOG_SEC=${GUARD_WATCHDOG_SEC:-60s}
+# HOT_HOLD — столько секунд после последнего горячего замера стенд при старте
+# выключается: без людей рядом перегретую машину не запускать (риск пожара).
+HOT_HOLD=${GUARD_HOT_HOLD:-7200}
 LOGFILE=/var/log/tross-lab-guard.log
 SELF=/usr/local/sbin/tross-lab-guard
 UNIT=/etc/systemd/system/tross-lab-guard.service
@@ -100,14 +111,41 @@ power_off() {
 	log crit "POWER OFF: $1"
 	[ "$DRY" = 1 ] && { log notice "dry run: not powering off"; return; }
 	stop_tests "$1"
+	mark_stop poweroff
 	sync
 	systemctl poweroff
+}
+
+# mark_stop — как машина уходит: следующий старт по метке различает «включили
+# кнопкой после выключения» и всё остальное. kind пусто — по заданиям
+# systemd (выключение / перезагрузка); иначе — остановлена только служба.
+mark_stop() {
+	local kind=${1:-}
+	if [ -z "$kind" ]; then
+		local jobs
+		jobs=$(systemctl list-jobs --no-legend 2>/dev/null || true)
+		case $jobs in
+		*poweroff.target* | *halt.target*) kind=poweroff ;;
+		*reboot.target* | *kexec.target*) kind=reboot ;;
+		*) kind=service ;;
+		esac
+	fi
+	mkdir -p "$KEEP"
+	echo "$(date +%s) $kind" >"$KEEP/stop"
+	sync
 }
 
 check() {
 	mkdir -p "$STATE"
 	local t ac bat free
 	t=$(cpu_temp)
+	if [ -n "$t" ]; then
+		mkdir -p "$KEEP"
+		echo "$(date +%s) $t" >"$KEEP/last"
+		# Последний горячий замер — отдельно: остывшая, а потом зависшая машина
+		# всё равно считается горячей ($HOT_HOLD после него).
+		[ "$t" -ge "$TEMP_STOP" ] && echo "$(date +%s) $t" >"$KEEP/hot"
+	fi
 	ac=$(on_ac)
 	bat=$(battery)
 	free=$(disk_free_mb)
@@ -133,6 +171,40 @@ check() {
 	return 0
 }
 
+# boot_check — при старте службы: как запустилась машина.
+# - Включили кнопкой после штатного выключения (метка poweroff): этот
+#   ноутбук выключенным не включает ни таймер, ни сеть, ни сторож
+#   перезагрузки — значит, рядом человек; работать.
+# - Остальное (сторож перезагрузки после зависания, крах, пропажа питания,
+#   перезагрузка командой): был ли горячим (>= TEMP_STOP) в последние
+#   HOT_HOLD до старта — выключить, а не работать: без людей рядом
+#   перегретую машину не запускать (риск пожара), даже если она остыла и
+#   потом зависла. Текущую температуру check замеряет сразу после старта.
+boot_check() {
+	local boot hot_at hot_t kind=none stop_at stop_kind wd
+	boot=$(awk '/^btime/ {print $2}' /proc/stat)
+	if [ -r "$KEEP/stop" ] && read -r stop_at stop_kind <"$KEEP/stop"; then
+		# Метка этой же загрузки — служба просто перезапускалась.
+		[ "$stop_at" -lt "$boot" ] && kind=$stop_kind
+		rm -f "$KEEP/stop"
+	fi
+	# Чип сторожа помнит, что сброс сделал он.
+	wd=$(cat /sys/class/watchdog/watchdog0/bootstatus 2>/dev/null || echo 0)
+	[ "${wd:-0}" != 0 ] && kind=watchdog
+	log notice "start after: $kind"
+	if [ "$kind" = poweroff ]; then
+		log notice "started by hand after a power-off: running, temperature watched"
+		return 0
+	fi
+	[ -r "$KEEP/hot" ] || return 0
+	read -r hot_at hot_t <"$KEEP/hot" || return 0
+	# Горячий замер этой же загрузки — служба просто перезапустилась.
+	[ "$hot_at" -lt "$boot" ] || return 0
+	if [ $((boot - hot_at)) -le "$HOT_HOLD" ]; then
+		power_off "started $(((boot - hot_at) / 60)) min after the last hot reading of ${hot_t}°C (>= ${TEMP_STOP}°C, hold $((HOT_HOLD / 60)) min)"
+	fi
+}
+
 status() {
 	echo "cpu temp:   $(cpu_temp) °C (stop >= $TEMP_STOP, power off >= $TEMP_OFF)"
 	echo "on mains:   $(on_ac) (0 — battery: stop tests; battery < $BAT_OFF% — power off)"
@@ -140,6 +212,9 @@ status() {
 	echo "disk free:  $(disk_free_mb) MB (stop < $DISK_MIN_MB)"
 	echo -n "tests:      "; tests_running && echo running || echo idle
 	echo -n "service:    "; systemctl is-active tross-lab-guard 2>/dev/null || true
+	echo "watchdog:   $(systemctl show -p RuntimeWatchdogUSec --value 2>/dev/null) (reboot on hang), on shutdown: $(systemctl show -p RebootWatchdogUSec --value 2>/dev/null)"
+	if [ -r "$KEEP/last" ]; then echo "last temp:  $(cat "$KEEP/last") (epoch °C)"; fi
+	if [ -r "$KEEP/hot" ]; then echo "last hot:   $(cat "$KEEP/hot") (epoch °C; start within $((HOT_HOLD / 60)) min after it — power off)"; fi
 }
 
 install_unit() {
@@ -151,21 +226,37 @@ install_unit() {
 
 		[Service]
 		ExecStart=$SELF run
+		ExecStop=$SELF stop-mark
 		Restart=always
 		RestartSec=10
 
 		[Install]
 		WantedBy=multi-user.target
 	EOF
+	mkdir -p "$(dirname "$WATCHDOG_CONF")"
+	cat >"$WATCHDOG_CONF" <<-EOF
+		# tross-lab-guard: аппаратный сторож перезагрузки — только на зависание
+		# работающей системы, при выключении отключён.
+		[Manager]
+		RuntimeWatchdogSec=$WATCHDOG_SEC
+		RebootWatchdogSec=off
+	EOF
 	systemctl daemon-reload
-	systemctl enable --now tross-lab-guard
+	# restart, а не enable --now: уже работающую службу --now не перезапускает,
+	# и новая версия не действовала бы до перезагрузки.
+	systemctl enable tross-lab-guard
+	systemctl restart tross-lab-guard
+	systemctl daemon-reexec
 	log notice "installed: stop >= ${TEMP_STOP}°C, off >= ${TEMP_OFF}°C, battery < ${BAT_OFF}%, disk < ${DISK_MIN_MB} MB"
 }
 
 case ${1:-} in
 check) check ;;
+boot-check) boot_check ;;
+stop-mark) mark_stop ;;
 run)
 	log notice "started: stop >= ${TEMP_STOP}°C, off >= ${TEMP_OFF}°C, battery < ${BAT_OFF}%, disk < ${DISK_MIN_MB} MB"
+	boot_check
 	while :; do
 		check || log err "check failed"
 		sleep "$INTERVAL"
@@ -175,11 +266,11 @@ status) status ;;
 install) install_unit ;;
 uninstall)
 	systemctl disable --now tross-lab-guard 2>/dev/null || true
-	rm -f "$UNIT" "$SELF"
+	rm -f "$UNIT" "$SELF" "$WATCHDOG_CONF"
 	systemctl daemon-reload
 	;;
 *)
-	echo "usage: lab-guard install|uninstall|status|check|run" >&2
+	echo "usage: lab-guard install|uninstall|status|check|boot-check|stop-mark|run" >&2
 	exit 2
 	;;
 esac
