@@ -22,9 +22,11 @@ import (
 	"tross/core/sqm"
 	"tross/internal/api"
 	"tross/internal/config"
+	"tross/internal/control"
 	"tross/internal/dataplane"
 	"tross/internal/linkmon"
 	"tross/internal/logring"
+	"tross/internal/resolver"
 	"tross/internal/sdnotify"
 	"tross/internal/store"
 )
@@ -103,6 +105,10 @@ func Run(ctx context.Context, opts Options) error {
 	lists := newListManager(cfg, log, rules, mon, spec)
 	// Кеш — до резолвера: первые же ответы знают онлайн-списки.
 	lists.LoadCache()
+	listsAPI, err := newListsAPI(ctx, cfg, lists, rules, st, log)
+	if err != nil {
+		return fmt.Errorf("manual rules: %w", err)
+	}
 	cls, err := newClassifier(cfg, cat, rules)
 	if err != nil {
 		return fmt.Errorf("classifier: %w", err)
@@ -116,6 +122,15 @@ func Run(ctx context.Context, opts Options) error {
 			return fmt.Errorf("dns: %w", err)
 		}
 	}
+	var res *resolver.Resolver
+	var dnsStatus func(context.Context) api.DNSStatus
+	if dnsSvc != nil {
+		res = dnsSvc.res
+	}
+	dbg := newDNSDebug(log, st, res, bus)
+	if dnsSvc != nil {
+		dnsStatus = func(ctx context.Context) api.DNSStatus { return dnsSvc.dnsStatus(ctx, dbg) }
+	}
 
 	srv := &http.Server{
 		Handler: api.New(api.Options{
@@ -128,6 +143,8 @@ func Run(ctx context.Context, opts Options) error {
 			Connections:     dp.Connections,
 			Explain:         expl.explain,
 			SQM:             sqmc.status,
+			DNS:             dnsStatus,
+			Lists:           listsAPI,
 			AllowedNetworks: cfg.API.AllowedNetworks,
 			Version:         opts.Version,
 			DryRun:          cfg.Daemon.DryRun,
@@ -157,8 +174,21 @@ func Run(ctx context.Context, opts Options) error {
 	wg.Go(func() { coll.run(runCtx, collectEvery) })
 	if dnsSvc != nil {
 		wg.Go(func() { dnsSvc.run(runCtx) })
+		wg.Go(func() { dnsSvc.intercept.run(runCtx, mon, dnsSvc.dial) })
 	}
 	wg.Go(func() { lists.Run(runCtx) })
+	wg.Go(func() { dbg.run(runCtx) })
+	if !cfg.Daemon.DryRun && cfg.Daemon.Control != "" {
+		// Команды root (отладочный журнал DNS) — только через этот сокет,
+		// не по сети; без него демон работает, но отладки нет.
+		if err := os.MkdirAll(filepath.Dir(cfg.Daemon.Control), 0o700); err != nil {
+			log.Warn("control socket dir", "err", err)
+		} else if l, err := control.Listen(cfg.Daemon.Control); err != nil {
+			log.Warn("control socket not opened", "path", cfg.Daemon.Control, "err", err)
+		} else {
+			wg.Go(func() { control.Serve(runCtx, l, dbg.handle, log) })
+		}
+	}
 	if every := sdnotify.WatchdogInterval(); every > 0 {
 		wg.Go(func() { watchdog(runCtx, log, every, mon, cfg.Monitor.Interval) })
 	}

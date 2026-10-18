@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"net/netip"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"tross/core/lists"
 	"tross/core/model"
 	"tross/core/profile"
+	"tross/internal/api"
 	"tross/internal/config"
 	"tross/internal/dataplane"
 	"tross/internal/resolver"
@@ -43,6 +45,11 @@ type dnsService struct {
 	cls      *classify.Engine
 	plan     func() []decision.ClassPlan
 	linkIdx  map[model.LinkID]int
+	health   *coredns.Health
+	dial     resolver.Dialer
+	// doh — адреса DoH-сервисов: известные и свои серверы (наблюдение).
+	doh       map[netip.Addr]bool
+	intercept *interceptCheck
 
 	mu     sync.Mutex
 	up     bool
@@ -66,6 +73,19 @@ func newDNSService(cfg *config.Config, log *slog.Logger, dp dataplane.Dataplane,
 		nets[l.Link.ID] = resolver.LinkNet{Interface: l.Link.Interface, Mark: l.FwMark}
 	}
 	health := coredns.NewHealth(coredns.DefaultHealthParams())
+	s.health, s.dial = health, resolver.LinkDialer(nets, 3*time.Second)
+	s.intercept = &interceptCheck{results: map[model.LinkID]api.LinkDNS{}}
+	s.doh = map[netip.Addr]bool{}
+	for _, a := range knownDoH {
+		s.doh[netip.MustParseAddr(a)] = true
+	}
+	for _, u := range cfg.DNS.Upstreams {
+		if uu, err := url.Parse(u.URL); err == nil {
+			if a, err := netip.ParseAddr(uu.Hostname()); err == nil {
+				s.doh[a] = true
+			}
+		}
+	}
 	pol, err := coredns.NewPolicy(cfg.DNS.PolicyUpstreams(), sensitiveDomains(cfg, cat), health, cfg.DNS.PolicyParams())
 	if err != nil {
 		return nil, err
@@ -92,7 +112,8 @@ func newDNSService(cfg *config.Config, log *slog.Logger, dp dataplane.Dataplane,
 		Cache: coredns.NewCache(coredns.DefaultCacheParams(cfg.DNS.CacheSize)), Rules: rules,
 		ClassSet:  func(l model.RuleLayer, c model.TrafficClass) string { return string(dataplane.ListSet(l, c)) },
 		SetTTLMin: cfg.DNS.SetTTL.Min, SetTTLMax: cfg.DNS.SetTTL.Max, Canary: *cfg.DNS.FirefoxCanaryNXDomain,
-		Route: s.route, Sink: dp, Dial: resolver.LinkDialer(nets, 3*time.Second), RootCAs: roots, Log: log,
+		Route: s.route, Sink: dp, Dial: s.dial, RootCAs: roots, Log: log,
+		Hosts: cfg.DNS.Hosts, Home: cfg.LAN.Networks,
 	})
 	if err != nil {
 		return nil, err

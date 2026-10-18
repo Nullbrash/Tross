@@ -3,13 +3,16 @@ package daemon
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	corelists "tross/core/lists"
 	"tross/core/model"
+	"tross/internal/api"
 	"tross/internal/config"
 	"tross/internal/dataplane"
 	"tross/internal/linkmon"
@@ -75,4 +78,90 @@ func newListManager(cfg *config.Config, log *slog.Logger, rules *corelists.Rules
 		opts.Fetch = listload.HTTPFetcher(links, listload.LinkDialer(dial), dns, 5*time.Minute)
 	}
 	return listload.New(opts)
+}
+
+// listsAPI — списки и ручные правила для API. Правила из API хранятся в
+// базе; правила конфига через API не удаляются (правятся в конфиге).
+type listsAPI struct {
+	mgr         *listload.Manager
+	rules       *corelists.Rules
+	st          store.Store
+	config      []model.DomainRule
+	classExists func(model.TrafficClass) bool
+
+	mu     sync.Mutex
+	stored []model.DomainRule
+}
+
+func newListsAPI(ctx context.Context, cfg *config.Config, mgr *listload.Manager, rules *corelists.Rules, st store.Store, log *slog.Logger) (*listsAPI, error) {
+	a := &listsAPI{mgr: mgr, rules: rules, st: st, config: cfg.Lists.ManualRules(),
+		classExists: func(c model.TrafficClass) bool { _, ok := cfg.Policies()[c]; return ok }}
+	stored, err := st.Rules(ctx, model.LayerManual)
+	if err != nil {
+		return nil, err
+	}
+	a.stored = stored
+	if err := a.applyLocked(); err != nil {
+		log.Warn("lists: some manual rules rejected", "err", err)
+	}
+	return a, nil
+}
+
+func (a *listsAPI) applyLocked() error {
+	return a.rules.SetManual(append(slices.Clone(a.config), a.stored...))
+}
+
+func (a *listsAPI) Sources() []corelists.SourceStatus { return a.mgr.Sources() }
+
+func (a *listsAPI) Refresh(ctx context.Context, id string) error { return a.mgr.Refresh(ctx, id) }
+
+func (a *listsAPI) Manual() []model.DomainRule {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append(slices.Clone(a.config), a.stored...)
+}
+
+func (a *listsAPI) AddManual(ctx context.Context, m api.ManualRule) error {
+	d, err := corelists.NormalizeName(m.Domain)
+	if err != nil {
+		return err
+	}
+	r := model.DomainRule{Pattern: d, Match: model.MatchSuffix, Layer: model.LayerManual, Purpose: m.Purpose, Class: m.Class, Source: "api"}
+	if m.Exact {
+		r.Match = model.MatchExact
+	}
+	if r.Purpose == "" || !r.Purpose.Valid() {
+		return fmt.Errorf("purpose: want bypass, class, never or inside, got %q", m.Purpose)
+	}
+	if r.Purpose == model.PurposeClass && !a.classExists(r.Class) {
+		return fmt.Errorf("unknown class %q", r.Class)
+	}
+	if r.Purpose != model.PurposeClass && r.Class != "" {
+		return fmt.Errorf("class is only allowed with purpose class")
+	}
+	if err := r.Validate(); err != nil {
+		return err
+	}
+	if err := a.st.SaveRule(ctx, r); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.stored = slices.DeleteFunc(a.stored, func(o model.DomainRule) bool { return o.Pattern == r.Pattern && o.Match == r.Match })
+	a.stored = append(a.stored, r)
+	return a.applyLocked()
+}
+
+func (a *listsAPI) DeleteManual(ctx context.Context, pattern string, match model.MatchKind) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	i := slices.IndexFunc(a.stored, func(o model.DomainRule) bool { return o.Pattern == pattern && o.Match == match })
+	if i < 0 {
+		return api.ErrNotFound
+	}
+	if err := a.st.DeleteRule(ctx, store.RuleKey{Layer: model.LayerManual, Match: match, Pattern: pattern}); err != nil {
+		return err
+	}
+	a.stored = slices.Delete(a.stored, i, i+1)
+	return a.applyLocked()
 }

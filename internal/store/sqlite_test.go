@@ -227,3 +227,28 @@ func TestFileReopen(t *testing.T) {
 		t.Fatalf("devices after reopen = %+v", got)
 	}
 }
+
+func TestDNSDebug(t *testing.T) {
+	s, err := Open("", DefaultRetention())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	now := time.Now()
+	old := DNSDebugRow{At: now.Add(-49 * time.Hour), Device: "192.168.1.5", Name: "old.example", Type: 1}
+	fresh := DNSDebugRow{At: now, Device: "192.168.1.5", Name: "new.example", Type: 1, Cached: true, Link: "isp1"}
+	if err := s.AppendDNSDebug(ctx, []DNSDebugRow{old, fresh}, 48*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.DNSDebug(ctx)
+	if err != nil || len(rows) != 1 || rows[0].Name != "new.example" || !rows[0].Cached || rows[0].Link != "isp1" {
+		t.Fatalf("rows %+v %v — want only the fresh one", rows, err)
+	}
+	if n, err := s.PurgeDNSDebug(ctx, time.Time{}); err != nil || n != 1 {
+		t.Errorf("purge: %d %v", n, err)
+	}
+	if rows, _ := s.DNSDebug(ctx); len(rows) != 0 {
+		t.Errorf("after purge: %+v", rows)
+	}
+}

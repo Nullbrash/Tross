@@ -137,7 +137,26 @@ type Store interface {
 	LinkStats(ctx context.Context, link model.LinkID, res Resolution, from, to time.Time) ([]LinkStat, error)
 	SystemStats(ctx context.Context, res Resolution, from, to time.Time) ([]SystemStat, error)
 
+	// AppendDNSDebug пишет записи отладочного журнала DNS и заодно удаляет
+	// записи старше keep.
+	AppendDNSDebug(ctx context.Context, rows []DNSDebugRow, keep time.Duration) error
+	// DNSDebug — записи по возрастанию времени.
+	DNSDebug(ctx context.Context) ([]DNSDebugRow, error)
+	// PurgeDNSDebug удаляет записи раньше before; нулевое время — все.
+	PurgeDNSDebug(ctx context.Context, before time.Time) (int64, error)
+
 	// SizeBytes — размер файла базы (0 для базы в памяти).
 	SizeBytes() int64
 	Close() error
+}
+
+// DNSDebugRow — запрос в отладочном журнале DNS.
+type DNSDebugRow struct {
+	At     time.Time    `json:"at"`
+	Device string       `json:"device"`
+	Name   string       `json:"name"`
+	Type   uint16       `json:"type"`
+	RCode  uint16       `json:"rcode"`
+	Cached bool         `json:"cached"`
+	Link   model.LinkID `json:"link,omitempty"`
 }

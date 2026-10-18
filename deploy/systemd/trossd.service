@@ -47,6 +47,9 @@ ProtectHome=yes
 PrivateTmp=yes
 StateDirectory=tross
 StateDirectoryMode=0750
+# Сокет команд root (`trossd debug …`): каталог только для root.
+RuntimeDirectory=tross
+RuntimeDirectoryMode=0700
 ReadWritePaths=/var/lib/tross
 RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
 LockPersonality=yes

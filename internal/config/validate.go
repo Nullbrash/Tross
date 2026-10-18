@@ -378,6 +378,14 @@ func (c *Config) validateDNS(p *problems) {
 			p.add("dns.fallback", "%s is the daemon's own listen address", d.Fallback)
 		}
 	}
+	for name, a := range d.Hosts {
+		if n, err := lists.NormalizeName(name); err != nil || n != name {
+			p.add("dns.hosts", "%q: want a normalized name (lowercase, punycode)", name)
+		}
+		if !a.Is4() {
+			p.add("dns.hosts", "%s: %s is not an IPv4 address", name, a)
+		}
+	}
 	seenDev := map[netip.Addr]bool{}
 	for i, dev := range d.Devices {
 		f := fmt.Sprintf("dns.devices[%d]", i)

@@ -336,3 +336,26 @@ func TestServeAndSelfCheck(t *testing.T) {
 		t.Errorf("serve: %v", err)
 	}
 }
+
+// Своё имя — устройствам дома свой адрес без похода наружу; снаружи — как
+// обычное имя.
+func TestOwnHosts(t *testing.T) {
+	b := newBench(t)
+	b.r.cfg.Hosts = map[string]netip.Addr{"mc.home.example": netip.MustParseAddr("192.168.77.50")}
+	b.r.cfg.Home = []netip.Prefix{netip.MustParsePrefix("192.168.77.0/24")}
+	ctx := context.Background()
+	m := parse(t, b.r.Handle(ctx, mkQuery(t, 1, "mc.home.example", dnsmessage.TypeA, false), client, 512))
+	if len(m.Answers) != 1 || m.Answers[0].Body.(*dnsmessage.AResource).A != [4]byte{192, 168, 77, 50} || !m.Authoritative {
+		t.Errorf("home device: %+v", m)
+	}
+	if m := parse(t, b.r.Handle(ctx, mkQuery(t, 2, "mc.home.example", dnsmessage.TypeAAAA, false), client, 512)); m.RCode != dnsmessage.RCodeSuccess || len(m.Answers) != 0 {
+		t.Errorf("AAAA of own name: %+v", m)
+	}
+	if n := b.prot.hits.Load() + b.fast.hits.Load() + b.fast2.hits.Load(); n != 0 {
+		t.Errorf("own name went upstream: %d", n)
+	}
+	outside := netip.MustParseAddr("203.0.113.9")
+	if m := parse(t, b.r.Handle(ctx, mkQuery(t, 3, "mc.home.example", dnsmessage.TypeA, false), outside, 512)); m.RCode != dnsmessage.RCodeNameError {
+		t.Errorf("outside client must get the public answer (fake: NXDOMAIN): %v", m.RCode)
+	}
+}

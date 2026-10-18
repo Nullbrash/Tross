@@ -22,6 +22,9 @@ var version = "dev"
 func main() { os.Exit(run()) }
 
 func run() int {
+	if len(os.Args) > 1 && os.Args[1] == "debug" {
+		return runDebug(os.Args[2:])
+	}
 	configPath := flag.String("config", "/etc/tross/config.yaml", "path to config file")
 	dryRun := flag.Bool("dry-run", false, "force dry-run mode: change nothing in the system")
 	dataDir := flag.String("data-dir", "", "override daemon.data_dir from the config")

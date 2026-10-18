@@ -32,7 +32,11 @@ type Options struct {
 	// Explain — «почему так» для соединения; nil — недоступно.
 	Explain ExplainFunc
 	// SQM — очереди CAKE каналов (только каналы с SQM); nil — недоступно.
-	SQM             func() map[model.LinkID]SQMStatus
+	SQM func() map[model.LinkID]SQMStatus
+	// DNS — резолвер дома; nil — не запущен (сухой режим).
+	DNS func(ctx context.Context) DNSStatus
+	// Lists — списки и ручные правила; nil — недоступно.
+	Lists           Lists
 	AllowedNetworks []netip.Prefix
 	Version         string
 	DryRun          bool
@@ -57,6 +61,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/connections", s.handleConnections)
 	mux.HandleFunc("GET /api/explain", s.handleExplain)
+	mux.HandleFunc("GET /api/dns", s.handleDNS)
+	mux.HandleFunc("GET /api/lists", s.handleLists)
+	mux.HandleFunc("POST /api/lists/refresh", s.handleListsRefresh)
+	mux.HandleFunc("POST /api/lists/manual", s.handleManualAdd)
+	mux.HandleFunc("DELETE /api/lists/manual", s.handleManualDelete)
 	// С методом GET: иначе этот шаблон перехватил бы POST /api/health вместо ответа 405.
 	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})

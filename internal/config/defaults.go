@@ -42,6 +42,7 @@ func orDefault[T comparable](v *T, d T) {
 
 func (c *Config) applyDefaults() {
 	orDefault(&c.Daemon.DataDir, "/var/lib/tross")
+	orDefault(&c.Daemon.Control, "/run/tross/trossd.sock")
 	orDefault(&c.Log.Level, "info")
 	orDefault(&c.Log.Format, "text")
 	orDefault(&c.Log.RingSize, 5000)

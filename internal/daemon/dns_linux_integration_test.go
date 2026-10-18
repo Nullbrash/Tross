@@ -14,6 +14,8 @@ import (
 
 	"tross/core/model"
 	"tross/internal/config"
+	"tross/internal/control"
+	"tross/internal/store"
 )
 
 // dig — короткий ответ с клиента (и с адреса источника src, если задан).
@@ -96,4 +98,38 @@ func TestDNSRedirectAndFallback(t *testing.T) {
 	if got := dig(t, "203.0.113.53", "printer", ""); got != benchSrv {
 		t.Errorf("daemon stopped: redirected query answered %q, want the fallback", got)
 	}
+}
+
+// Фаза 4: свои имена, отладочный журнал через сокет root, /api/dns.
+func TestDNSHostsDebugAndAPI(t *testing.T) {
+	cfg := classCfg(t)
+	cfg.DNS.Hosts = map[string]netip.Addr{"nas.home.example": netip.MustParseAddr("192.168.77.50")}
+	cfg.Daemon.Control = t.TempDir() + "/trossd.sock"
+	startDaemon(t, cfg)
+	until(t, 5*time.Second, "own name answered", func() bool { return dig(t, "192.168.77.1", "nas.home.example", "") == "192.168.77.50" })
+
+	// Без прогона — в журнале пусто.
+	var rows []store.DNSDebugRow
+	if err := control.Call(cfg.Daemon.Control, control.Request{Cmd: "dns-log-export"}, &rows); err != nil || len(rows) != 0 {
+		t.Fatalf("before the run: %d rows, %v", len(rows), err)
+	}
+	if err := control.Call(cfg.Daemon.Control, control.Request{Cmd: "dns-log-start", For: time.Minute}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := dig(t, "192.168.77.1", "store.steampowered.com", ""); got != benchSrv {
+		t.Fatalf("dig: %q", got)
+	}
+	until(t, 5*time.Second, "debug rows written", func() bool {
+		rows = nil
+		_ = control.Call(cfg.Daemon.Control, control.Request{Cmd: "dns-log-export", Anonymize: true}, &rows)
+		return len(rows) > 0
+	})
+	if rows[0].Name != "store.steampowered.com" || rows[0].Device != "device-1" {
+		t.Errorf("row %+v", rows[0])
+	}
+	out, err := exec.Command("wget", "-q", "-T", "2", "-O", "-", "http://"+cfg.API.Listen+"/api/dns").Output()
+	if err != nil || !strings.Contains(string(out), `"serving":"resolver"`) || !strings.Contains(string(out), `"active":true`) {
+		t.Errorf("/api/dns: %v %s", err, out)
+	}
+	_ = control.Call(cfg.Daemon.Control, control.Request{Cmd: "dns-log-purge"}, nil)
 }

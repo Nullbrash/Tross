@@ -40,6 +40,9 @@ type Daemon struct {
 	// DryRun — ничего не менять в системе: фейковые dataplane и монитор.
 	DryRun  bool   `yaml:"dry_run"`
 	DataDir string `yaml:"data_dir"`
+	// Control — сокет команд root (`trossd debug …`); в «сухом» режиме
+	// не открывается.
+	Control string `yaml:"control"`
 }
 
 type Log struct {
@@ -237,6 +240,9 @@ type DNS struct {
 	Devices []DNSDevice `yaml:"devices"`
 	// CAFile — дополнительные корни для DoH/DoT (свой сервер, стенд).
 	CAFile string `yaml:"ca_file"`
+	// Hosts — свои имена: устройствам дома резолвер отвечает этим адресом,
+	// наружу имя не спрашивает (сервер дома по тому же имени, что снаружи).
+	Hosts map[string]netip.Addr `yaml:"hosts"`
 }
 
 type DNSDevice struct {

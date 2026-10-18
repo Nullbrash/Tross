@@ -73,6 +73,9 @@ var migrations = []string{
 	   softirq_avg REAL, softirq_max REAL, mem_avg REAL, mem_max REAL, proc_cpu_avg REAL, proc_cpu_max REAL,
 	   proc_cpu_p95 REAL, rss_avg REAL, rss_max REAL, disk_kb REAL, PRIMARY KEY (res, at)) WITHOUT ROWID;
 	 CREATE TABLE rollup_state (res TEXT PRIMARY KEY, done_until INTEGER NOT NULL);`,
+	// Отладочный журнал DNS: только во время отладочного прогона, хранится 48 ч.
+	`CREATE TABLE dns_debug (at INTEGER NOT NULL, device TEXT NOT NULL, name TEXT NOT NULL, qtype INTEGER, rcode INTEGER, cached INTEGER, link TEXT);
+	 CREATE INDEX dns_debug_at ON dns_debug (at);`,
 }
 
 func (s *SQLite) migrate() error {
@@ -528,4 +531,63 @@ func (s *SQLite) SystemStats(ctx context.Context, res Resolution, from, to time.
 		out = append(out, st)
 	}
 	return out, rows.Err()
+}
+
+func (s *SQLite) AppendDNSDebug(ctx context.Context, rows []DNSDebugRow, keep time.Duration) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, r := range rows {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO dns_debug (at, device, name, qtype, rcode, cached, link) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			r.At.UnixMilli(), r.Device, r.Name, r.Type, r.RCode, r.Cached, string(r.Link)); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM dns_debug WHERE at < ?`, time.Now().Add(-keep).UnixMilli()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) DNSDebug(ctx context.Context) ([]DNSDebugRow, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT at, device, name, qtype, rcode, cached, link FROM dns_debug ORDER BY at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DNSDebugRow
+	for rows.Next() {
+		var r DNSDebugRow
+		var at int64
+		var link string
+		if err := rows.Scan(&at, &r.Device, &r.Name, &r.Type, &r.RCode, &r.Cached, &link); err != nil {
+			return nil, err
+		}
+		r.At, r.Link = time.UnixMilli(at), model.LinkID(link)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) PurgeDNSDebug(ctx context.Context, before time.Time) (int64, error) {
+	if err := s.check(); err != nil {
+		return 0, err
+	}
+	q, args := `DELETE FROM dns_debug`, []any{}
+	if !before.IsZero() {
+		q, args = q+` WHERE at < ?`, append(args, before.UnixMilli())
+	}
+	res, err := s.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

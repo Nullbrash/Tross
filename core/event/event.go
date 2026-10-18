@@ -22,12 +22,15 @@ const (
 	TopicLinkRound Topic = "link.round"
 	// TopicSQM — смена скорости очередей канала (данные — SQMChange).
 	TopicSQM Topic = "sqm"
+	// TopicDNSDebug — отладочный журнал DNS включён или выключен: видно, если
+	// его включил не владелец.
+	TopicDNSDebug Topic = "dns.debug"
 )
 
 // JournalTopics — темы, которые пишутся в журнал и историю событий:
 // всё, кроме частых служебных (раунды проб).
 func JournalTopics() []Topic {
-	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDNSWatchdog, TopicSQM}
+	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDNSWatchdog, TopicSQM, TopicDNSDebug}
 }
 
 // LinkRound — данные события TopicLinkRound.
