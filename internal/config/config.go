@@ -258,6 +258,9 @@ type Upstream struct {
 	Pools []coredns.Pool `yaml:"pools"`
 	// Backup — запасной для доли этого сервера в защищённом наборе.
 	Backup string `yaml:"backup"`
+	// TLSName — сертификат сервера, заданного по IP, выдан на имя (без IP):
+	// проверять по этому имени; само имя наружу не уходит.
+	TLSName string `yaml:"tls_name"`
 }
 
 // Sensitive — особо личное: DNS — только защищённым набором, домен

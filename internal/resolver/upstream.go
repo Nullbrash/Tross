@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -43,7 +44,9 @@ type upstream struct {
 	idle    map[model.LinkID][]*tls.Conn
 }
 
-func newUpstream(name, raw string, roots tlsRoots, dial Dialer, lookup lookupFunc, timeout time.Duration) (*upstream, error) {
+// tlsName — имя, по которому проверяется сертификат сервера, заданного по
+// IP, если в сертификате нет IP (имя при этом не отправляется).
+func newUpstream(name, raw, tlsName string, roots tlsRoots, dial Dialer, lookup lookupFunc, timeout time.Duration) (*upstream, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" {
 		return nil, fmt.Errorf("upstream %s: bad url %q", name, raw)
@@ -67,6 +70,22 @@ func newUpstream(name, raw string, roots tlsRoots, dial Dialer, lookup lookupFun
 	// Для адреса-IP Go не отправляет имя (SNI) и сверяет IP в сертификате:
 	// провайдер канала не видит, к какому DNS-сервису идёт запрос.
 	up.tls = &tls.Config{ServerName: up.host, RootCAs: roots.pool, MinVersion: tls.VersionTLS12}
+	if tlsName != "" {
+		// Имя в SNI в России обрывают — сертификат проверяется по имени
+		// вручную, а наружу уходит только IP.
+		up.tls.InsecureSkipVerify = true
+		up.tls.VerifyConnection = func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("no server certificate")
+			}
+			inter := x509.NewCertPool()
+			for _, c := range cs.PeerCertificates[1:] {
+				inter.AddCert(c)
+			}
+			_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{DNSName: tlsName, Roots: roots.pool, Intermediates: inter})
+			return err
+		}
+	}
 	if up.doh {
 		up.tls.NextProtos = []string{"h2", "http/1.1"}
 	}

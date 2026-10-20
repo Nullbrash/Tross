@@ -34,6 +34,10 @@ declare -A PROFILE=([isp1]="8 1 0 0 0" [isp2]="12 2 0 0 0" [lte]="45 10 0.5 60 2
 
 SRV_IP=203.0.113.10
 DNS_IP=203.0.113.53
+# «Резолверы» с поведением (labsrv dns, DoH :443 и DoT :853; корни —
+# $STATE/dns-ca.pem): свой адрес на имя (198.51.100.0/24), он же медленный,
+# SERVFAIL, молчание.
+DNS_LAB=(203.0.113.54=hash 203.0.113.55=hash/150ms 203.0.113.56=servfail 203.0.113.57=drop)
 PROBE_IPS=(203.0.113.1 203.0.113.2 203.0.113.3)
 
 die() { echo "lab-netns: $*" >&2; exit 1; }
@@ -73,10 +77,12 @@ cmd_up() {
 
 	# «Интернет»: адреса проб и серверов на dummy-интерфейсе.
 	nsx tl-inet ip link add srv type dummy
-	for a in "${PROBE_IPS[@]}" "$SRV_IP" "$DNS_IP"; do nsx tl-inet ip addr add "$a/32" dev srv; done
+	for a in "${PROBE_IPS[@]}" "$SRV_IP" "$DNS_IP" "${DNS_LAB[@]%%=*}"; do nsx tl-inet ip addr add "$a/32" dev srv; done
 	nsx tl-inet ip link set srv up
 	# Ещё 64 адреса «интернета» для проверок распределения по каналам.
 	nsx tl-inet ip route add local 203.0.113.64/26 dev srv
+	# Адреса сайтов «резолвера» hash: у каждого имени свой.
+	nsx tl-inet ip route add local 198.51.100.0/24 dev srv
 
 	for l in "${LINKS[@]}"; do
 		local i=${IDX[$l]} ns; ns=$(ns_of "$l")
@@ -126,7 +132,9 @@ start_servers() {
 	[ -x "$BIN/labsrv" ] || die "no $BIN/labsrv (build: go build -o bin/ ./cmd/...)"
 	# DoH/DoT — на адресе DNS стенда (dnsmasq занимает только 53); корень
 	# сертификата читают тесты монитора (labDoHCA).
-	nsx tl-inet setsid "$BIN/labsrv" serve -http "$SRV_IP:80" -udp "$SRV_IP:9000" -portal "$SRV_IP:8080" \
+	# /files/ — раздача онлайн-списков для тестов загрузчика.
+	mkdir -p "$STATE/files"
+	nsx tl-inet setsid "$BIN/labsrv" serve -http "$SRV_IP:80" -udp "$SRV_IP:9000" -portal "$SRV_IP:8080" -files "$STATE/files" \
 		-doh "$DNS_IP:443" -dot "$DNS_IP:853" -dns-ca "$STATE/doh-ca.pem" -dns-answer "$SRV_IP" \
 		> "$STATE/labsrv.log" 2>&1 < /dev/null &
 	echo $! > "$STATE/labsrv.pid"
@@ -140,6 +148,10 @@ start_servers() {
 	# множества адресов YouTube.
 	nsx tl-inet setsid "$BIN/labsrv" serve -http ":89" -udp ":9020" > "$STATE/labsrv-video.log" 2>&1 < /dev/null &
 	echo $! > "$STATE/labsrv-video.pid"
+	local dns_args=() d
+	for d in "${DNS_LAB[@]}"; do dns_args+=(-server "$d"); done
+	nsx tl-inet setsid "$BIN/labsrv" dns -ca "$STATE/dns-ca.pem" "${dns_args[@]}" > "$STATE/labsrv-dns.log" 2>&1 < /dev/null &
+	echo $! > "$STATE/labsrv-dns.pid"
 	if command -v iperf3 >/dev/null; then
 		nsx tl-inet iperf3 -s -B "$SRV_IP" -D --pidfile "$STATE/iperf3.pid" --logfile "$STATE/iperf3.log"
 	fi
@@ -169,7 +181,7 @@ start_servers() {
 }
 
 stop_servers() {
-	for p in labsrv labsrv-peers labsrv-video iperf3 dnsmasq dnsmasq-fallback; do
+	for p in labsrv labsrv-peers labsrv-video labsrv-dns iperf3 dnsmasq dnsmasq-fallback; do
 		[ -f "$STATE/$p.pid" ] && kill "$(cat "$STATE/$p.pid")" 2>/dev/null || true
 		rm -f "$STATE/$p.pid"
 	done
@@ -207,7 +219,7 @@ cmd_status() {
 		nsx "$(ns_of "$l")" tc qdisc show dev cpe | sed 's/^/   /'
 	done
 	echo "== servers"
-	for p in labsrv labsrv-peers labsrv-video iperf3 dnsmasq dnsmasq-fallback; do
+	for p in labsrv labsrv-peers labsrv-video labsrv-dns iperf3 dnsmasq dnsmasq-fallback; do
 		if [ -f "$STATE/$p.pid" ] && kill -0 "$(cat "$STATE/$p.pid")" 2>/dev/null; then echo "   $p running"; else echo "   $p not running"; fi
 	done
 }
@@ -217,7 +229,8 @@ cmd_shape() {
 	[ $# = 6 ] || die "shape <link> <rtt_ms> <jitter_ms> <loss_pct> <down_mbit|0> <up_mbit|0>"
 	ns_of "$1" >/dev/null
 	echo "$2 $3 $4 $5 $6" > "$STATE/profile-$1"
-	apply_profile "$1"
+	# Оборванный канал остаётся оборванным: новый профиль применит restore.
+	[ -f "$STATE/broken-$1" ] || apply_profile "$1"
 }
 
 cmd_break() {
@@ -230,6 +243,7 @@ cmd_break() {
 		down) nsx "$ns" ip link set cpe down ;;
 		*) die "break mode: loss|down" ;;
 	esac
+	echo "$mode" > "$STATE/broken-$l"
 	echo "$l broken ($mode)"
 }
 
@@ -250,6 +264,7 @@ cmd_restore() {
 	need_root; is_up || die "lab is down"
 	local l=${1:?link} ns; ns=$(ns_of "$l")
 	nsx "$ns" ip link set cpe up
+	rm -f "$STATE/broken-$l"
 	apply_profile "$l"
 	echo "$l restored"
 }

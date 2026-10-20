@@ -75,9 +75,12 @@ var interceptTarget = netip.MustParseAddrPort("192.0.2.53:53")
 
 const interceptEvery = 6 * time.Hour
 
+// interceptFirst — первая проверка: когда каналы успели подняться
+// (переменная — тест на стенде её укорачивает).
+var interceptFirst = time.Minute
+
 func (ic *interceptCheck) run(ctx context.Context, mon linkmon.LinkMonitor, dial resolver.Dialer) {
-	// Первая проверка — когда каналы успели подняться.
-	t := time.NewTimer(time.Minute)
+	t := time.NewTimer(interceptFirst)
 	defer t.Stop()
 	for {
 		select {

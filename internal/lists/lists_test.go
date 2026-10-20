@@ -131,6 +131,29 @@ func TestBrokenSourceKeepsOld(t *testing.T) {
 	}
 }
 
+// Нет исправного канала (сразу после запуска) — не сбой: без паузы, на
+// следующей проверке список загрузится.
+func TestNoLinkIsNotAFailure(t *testing.T) {
+	net := newFakeNet()
+	net.set(srcURL, "blocked.example\n")
+	net.mu.Lock()
+	net.fail[srcURL] = ErrNoLink
+	net.mu.Unlock()
+	m, rules := manager(t, t.TempDir(), net)
+	if err := m.Refresh(context.Background(), ""); !errors.Is(err, ErrNoLink) {
+		t.Fatalf("err = %v", err)
+	}
+	if !m.due(m.opts.Sources[0], time.Now().Add(time.Minute)) {
+		t.Error("no link put the source on the retry pause")
+	}
+	net.mu.Lock()
+	delete(net.fail, srcURL)
+	net.mu.Unlock()
+	if err := m.Refresh(context.Background(), ""); err != nil || !bypass(rules, "blocked.example") {
+		t.Errorf("after the link came up: %v", err)
+	}
+}
+
 // Неизменившийся список не перекачивается: условный запрос по ETag.
 func TestETagNotModified(t *testing.T) {
 	net := newFakeNet()
@@ -192,7 +215,7 @@ func TestDisabledAndTooLarge(t *testing.T) {
 func TestClassRule(t *testing.T) {
 	r := corelists.NewRules()
 	_ = r.SetManual([]model.DomainRule{{Pattern: "video.example", Match: model.MatchSuffix, Purpose: model.PurposeBypass}})
-	_ = r.SetOnline("cls", []model.DomainRule{{Pattern: "video.example", Match: model.MatchSuffix, Purpose: model.PurposeClass, Class: model.ClassStreaming}})
+	_ = r.SetOnline("cls", model.DomainRule{Purpose: model.PurposeClass, Class: model.ClassStreaming}, []corelists.Entry{{Pattern: "video.example", Match: model.MatchSuffix}})
 	got, ok := ClassRule(r)("www.video.example")
 	if !ok || got.Class != model.ClassStreaming {
 		t.Errorf("class rule %+v %v", got, ok)

@@ -45,7 +45,9 @@ type SetSink interface {
 type Route func(domain string, client netip.Addr) (query model.LinkID, pin dataplane.SetName, ok bool)
 
 // UpstreamSpec — внешний сервер из конфига.
-type UpstreamSpec struct{ Name, URL string }
+// UpstreamSpec — сервер: TLSName — имя для проверки сертификата сервера по
+// IP без IP в сертификате.
+type UpstreamSpec struct{ Name, URL, TLSName string }
 
 type Config struct {
 	Upstreams []UpstreamSpec
@@ -106,7 +108,7 @@ func New(cfg Config) (*Resolver, error) {
 	r := &Resolver{cfg: cfg, ups: map[string]*upstream{}, calls: map[coredns.Key]*call{}}
 	r.sets.Store(coredns.NewSetIndex(nil))
 	for _, s := range cfg.Upstreams {
-		u, err := newUpstream(s.Name, s.URL, tlsRoots{cfg.RootCAs}, cfg.Dial, r.lookupHost, cfg.Timeout)
+		u, err := newUpstream(s.Name, s.URL, s.TLSName, tlsRoots{cfg.RootCAs}, cfg.Dial, r.lookupHost, cfg.Timeout)
 		if err != nil {
 			return nil, err
 		}

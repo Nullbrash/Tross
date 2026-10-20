@@ -169,3 +169,47 @@ func TestDNSServiceSwitchesInterception(t *testing.T) {
 		t.Errorf("switches %v — want on once, off at stop", dns)
 	}
 }
+
+// slowPins — ядро, отвечающее о закреплениях медленно (как nft на мини-ПК).
+type slowPins struct {
+	dataplane.Dataplane
+	delay time.Duration
+}
+
+func (s slowPins) Pins(ctx context.Context) ([]dataplane.Pin, error) {
+	time.Sleep(s.delay)
+	return s.Dataplane.Pins(ctx)
+}
+
+// Устаревшие закрепления обновляются в фоне: ответ не ждёт ядро.
+func TestDevicePinsRefreshInBackground(t *testing.T) {
+	s := dnsRouteBench(t, nil)
+	fake := s.dp.(*dataplane.Fake)
+	s.dp = slowPins{Dataplane: fake, delay: 300 * time.Millisecond}
+	domainLink, _, _ := s.route("www.youtube.com", dev)
+	other := model.LinkID("isp1")
+	if domainLink == "isp1" {
+		other = "isp2"
+	}
+	fake.SetObserved(nil, []dataplane.Pin{{Service: "youtube", Device: dev, Link: other}})
+	s.mu.Lock()
+	s.pinsAt = time.Now().Add(-time.Hour)
+	s.mu.Unlock()
+	start := time.Now()
+	if q, _, _ := s.route("www.youtube.com", dev); q != domainLink {
+		t.Errorf("stale pins expected right away, got %s", q)
+	}
+	if d := time.Since(start); d > 100*time.Millisecond {
+		t.Errorf("route waited %v for the kernel", d)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if q, _, _ := s.route("www.youtube.com", dev); q == other {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background refresh never delivered the new pin")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

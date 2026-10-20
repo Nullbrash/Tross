@@ -13,8 +13,17 @@ import (
 )
 
 // Parsed — правила источника без слоя и назначения (их ставит загрузчик).
+// Entry — домен из списка и способ сопоставления.
+type Entry struct {
+	Pattern string
+	Match   model.MatchKind
+}
+
 type Parsed struct {
-	Rules []model.DomainRule
+	// Entries — только домены: назначение и класс у источника общие, а
+	// полная запись правила на каждый из миллиона доменов — сотни МБ
+	// временной памяти при разборе.
+	Entries []Entry
 	// Skipped — понятные, но неподдерживаемые записи (regexp), Bad — мусор.
 	Skipped, Bad int
 }
@@ -85,7 +94,7 @@ func ParseText(r io.Reader) (Parsed, error) {
 			p.Bad++
 			continue
 		}
-		p.Rules = append(p.Rules, model.DomainRule{Pattern: entry, Match: kind})
+		p.Entries = append(p.Entries, Entry{Pattern: entry, Match: kind})
 	}
 	return p, sc.Err()
 }
@@ -189,7 +198,7 @@ func geositeDomain(b []byte, p *Parsed) error {
 		p.Bad++
 		return nil
 	}
-	p.Rules = append(p.Rules, model.DomainRule{Pattern: value, Match: kind})
+	p.Entries = append(p.Entries, Entry{Pattern: value, Match: kind})
 	return nil
 }
 

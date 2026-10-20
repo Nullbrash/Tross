@@ -271,9 +271,11 @@ dns:
   # Сервер без pools — только запасной (backup) для чужой доли.
   upstreams:
     - { name: quad9,            url: "https://9.9.9.9/dns-query", pools: [protected, fast], backup: quad9-unfiltered }
-    - { name: mullvad,          url: "https://194.242.2.2/dns-query", pools: [protected], backup: dnssb }
-    - { name: digitale,         url: "https://185.95.218.42/dns-query", pools: [protected], backup: dnssb }
-    - { name: dns4eu,           url: "tls://86.54.11.100", pools: [protected], backup: dnssb }
+    # tls_name — сертификат выдан на имя, а не на IP: проверять по имени
+    # (наружу уходит только IP — имя в SNI в России обрывают).
+    - { name: mullvad,          url: "https://194.242.2.2/dns-query", pools: [protected], backup: dnssb, tls_name: dns.mullvad.net }
+    - { name: digitale,         url: "https://185.95.218.42/dns-query", pools: [protected], backup: dnssb, tls_name: dns.digitale-gesellschaft.ch }
+    - { name: dns4eu,           url: "tls://86.54.11.100", pools: [protected], backup: dnssb, tls_name: unfiltered.joindns4.eu }
     - { name: quad9-unfiltered, url: "https://9.9.9.10/dns-query" }   # без фильтра вредоносного
     - { name: dnssb,            url: "https://185.222.222.222/dns-query" }
     - { name: cloudflare,       url: "https://1.1.1.1/dns-query", pools: [fast] }
@@ -285,7 +287,9 @@ dns:
   # Особо личное: сервисы каталога профилей (или их части — "steam/store") и
   # домены (с поддоменами). Свой список заменяет этот целиком.
   sensitive:
-    services: [steam, youtube, discord]
+    # Steam — только магазин: загрузки через защищённый набор попадают на
+    # дальние узлы CDN.
+    services: [steam/store, youtube, discord]
     domains: [telegram.org, t.me, telegram.me, telegra.ph, tdesktop.com, telesco.pe, cdn-telegram.org,
               gmail.com, googlemail.com, mail.google.com,
               proton.me, protonmail.com, outlook.com, hotmail.com, mail.ru, mail.yandex.ru,

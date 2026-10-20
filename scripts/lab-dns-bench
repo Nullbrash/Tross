@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Замеры резолвера на закрытом стенде: запросов в секунду и задержка ответа
+# (из кэша; промах без множеств; промах с наполнением множеств ядра), ЦП и
+# память демона; затем память и задержка с большими онлайн-списками.
+# «Интернет» — labsrv dns 203.0.113.54 (свой адрес на каждое имя).
+#
+#   scripts/lab-dns-bench [списки]   каталог с файлами списков (необязательно):
+#                                    inside.lst, refilter.lst, antifilter.lst,
+#                                    geosite.dat — что найдётся
+#   DNS_QPS="100 500 1000" DNS_SECS=15 scripts/lab-dns-bench
+#
+# Результаты: ~/lab-results/<дата>-dns-bench/summary.txt (+ trossd*.log).
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+exec 9>>/run/lock/tross-lab.lock
+flock -n 9 || { echo "lab-dns-bench: stand is busy — another run holds /run/lock/tross-lab.lock" >&2; exit 3; }
+lists=${1:-}
+qpss=${DNS_QPS:-100 500 1000 2000 4000}
+secs=${DNS_SECS:-15}
+out=$HOME/lab-results/$(date +%F)-dns-bench
+lab=$PWD/scripts/lab-netns
+bin=$PWD/bin
+api=http://192.168.77.1:8080
+[ -x "$bin/trossd" ] && [ -x "$bin/labsrv" ] || { echo "build first: scripts/lab-sync build"; exit 1; }
+
+S() { sudo -n "$@"; }
+client() { S ip netns exec tl-client "$@"; }
+tross() { S ip netns exec tl-tross "$@"; }
+log() { echo "$*" | tee -a "$out/summary.txt"; }
+
+rm -rf "$out" 2>/dev/null || S rm -rf "$out"
+mkdir -p "$out"
+cleanup() {
+	S pkill -INT -x trossd 2>/dev/null || true
+	sleep 2
+	S "$lab" down >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+S "$lab" down >/dev/null 2>&1 || true
+S "$lab" up >/dev/null
+
+# Конфиг: классы стенда, резолвер — «hash»; со списками — их источники с
+# раздачи стенда (/files/).
+config() {
+	awk '
+		/^  upstreams:/ { print "  upstreams: [{ name: hash, url: \"https://203.0.113.54/dns-query\", pools: [protected, fast] }]"; next }
+		/^  ca_file:/ { print "  ca_file: /run/tross-lab/dns-ca.pem"; next }
+		{ print }
+	' configs/lab-classes.yaml
+	[ -n "${1:-}" ] || return 0
+	echo "lists:"
+	echo "  sources:"
+	local f
+	for f in inside refilter antifilter; do
+		[ -f "/run/tross-lab/files/$f.lst" ] && echo "    - { id: $f, url: \"http://203.0.113.10/files/$f.lst\", format: text }"
+	done
+	[ -f /run/tross-lab/files/geosite.dat ] &&
+		echo "    - { id: geosite, url: \"http://203.0.113.10/files/geosite.dat\", format: geosite, categories: [ru-available-only-inside, ru-blocked, ru-blocked-all] }"
+	return 0
+}
+
+pid=""
+start() {
+	tross "$bin/trossd" -config "$1" -data-dir "$out/data-$2" >>"$out/trossd-$2.log" 2>&1 &
+	for _ in $(seq 1 300); do
+		tross wget -qO- "$api/api/links" 2>/dev/null | grep -q '"id":"isp2"[^}]*"state":"up"' && break
+		sleep 0.2
+	done
+	pid=$(pgrep -nx trossd)
+}
+stop() {
+	S kill -INT "$pid" 2>/dev/null || true
+	while S kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+}
+# ЦП демона в тиках (utime + stime) и память (RSS, МБ).
+ticks() { S awk '{print $14 + $15}' "/proc/$pid/stat"; }
+rss() { S awk '/^VmRSS/ {printf "%.1f", $2 / 1024}' "/proc/$pid/status"; }
+hz=$(getconf CLK_TCK)
+
+run() { # names qps suffix
+	local t0 t1 r
+	t0=$(ticks)
+	r=$(client "$bin/labsrv" dnsload -names "$1" -qps "$2" -suffix "$3" -duration "${secs}s")
+	t1=$(ticks)
+	log "$r | daemon cpu $(awk -v a="$t0" -v b="$t1" -v hz="$hz" -v s="$secs" 'BEGIN{printf "%.1f", (b - a) * 100 / hz / (s + 2)}')% of a core, rss $(rss) MB"
+}
+
+config >"$out/dns.yaml"
+start "$out/dns.yaml" plain
+log "== $(date -Is) resolver: rss at start $(rss) MB"
+log "== reference: fallback dnsmasq (no daemon in the path)"
+log "$(client "$bin/labsrv" dnsload -server 192.168.77.1:5335 -names hit -qps 1000 -duration "${secs}s")"
+for names in hit miss sets; do
+	suffix=load.example
+	# Видео YouTube: множество профиля + «домен → канал» (две доли).
+	[ "$names" = sets ] && suffix=googlevideo.com
+	log "== $names ($suffix)"
+	for q in $qpss; do run "$names" "$q" "$suffix"; done
+done
+log "rss after: $(rss) MB; elements in youtube sets: $(tross nft list set inet tross tross_dp_youtube_video_0 2>/dev/null | grep -o '198\.51\.100\.[0-9]*' | sort -u | wc -l)"
+stop
+
+if [ -n "$lists" ]; then
+	S cp "$lists"/* /run/tross-lab/files/
+	config with-lists >"$out/dns-lists.yaml"
+	start "$out/dns-lists.yaml" lists
+	log "== with lists ($(ls "$lists" | tr '\n' ' ')): rss at start $(rss) MB"
+	# Загрузчик проверяет источники раз в минуту; разбор geosite — секунды.
+	for _ in $(seq 1 60); do
+		n=$(tross wget -qO- "$api/api/lists" 2>/dev/null | grep -o '"domains":[0-9]*' | awk -F: '$2 > 0' | wc -l)
+		[ "$n" -ge "$(ls "$lists" | wc -l)" ] && break
+		sleep 5
+	done
+	log "lists loaded: $(tross wget -qO- "$api/api/lists" | grep -o '"id":"[^"]*","url[^}]*}[^}]*"domains":[0-9]*' | sed -E 's/"id":"([^"]*)".*"domains":([0-9]*)/\1=\2/' | tr '\n' ' ')"
+	log "rss with lists: $(rss) MB"
+	for names in miss sets; do
+		suffix=load.example
+		[ "$names" = sets ] && suffix=googlevideo.com
+		run "$names" 500 "$suffix"
+	done
+	stop
+fi
+cleanup
+trap - EXIT
+S chown -R "$(id -u):$(id -g)" "$out" 2>/dev/null || true
+log "DNS BENCH DONE: $out"

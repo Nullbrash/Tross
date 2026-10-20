@@ -70,32 +70,29 @@ func (r *Rules) SetBuiltin(rules []model.DomainRule) error {
 	return err
 }
 
-// SetOnline заменяет правила одного онлайн-источника; nil — убрать источник.
-func (r *Rules) SetOnline(source string, rules []model.DomainRule) error {
-	if rules == nil {
+// SetOnline заменяет правила онлайн-источника: tmpl — общее для всех его
+// доменов (назначение, класс, метод), entries — домены; nil — убрать
+// источник. Неверные записи отбрасываются с ошибкой, верные действуют.
+func (r *Rules) SetOnline(source string, tmpl model.DomainRule, entries []Entry) error {
+	if entries == nil {
 		r.mu.Lock()
 		delete(r.online, source)
 		r.mu.Unlock()
 		return nil
 	}
+	tmpl.Layer, tmpl.Source = model.LayerOnline, source
+	tmpl.Pattern, tmpl.Match = "", ""
+	t := &tmpl
 	x := &Index[*model.DomainRule]{}
 	var errs []error
-	// Шаблоны по (назначение, класс, метод): у онлайн-источника они общие.
-	templates := map[model.DomainRule]*model.DomainRule{}
-	for i, rule := range rules {
-		rule.Layer, rule.Source = model.LayerOnline, source
+	for i, e := range entries {
+		rule := tmpl
+		rule.Pattern, rule.Match = e.Pattern, e.Match
 		if err := rule.Validate(); err != nil {
-			errs = append(errs, fmt.Errorf("rule %d (%s): %w", i, rule.Pattern, err))
+			errs = append(errs, fmt.Errorf("rule %d (%s): %w", i, e.Pattern, err))
 			continue
 		}
-		key := rule
-		key.Pattern, key.Match = "", ""
-		t := templates[key]
-		if t == nil {
-			t = &key
-			templates[key] = t
-		}
-		x.Add(rule.Pattern, rule.Match, t)
+		x.Add(e.Pattern, e.Match, t)
 	}
 	r.mu.Lock()
 	r.online[source] = x

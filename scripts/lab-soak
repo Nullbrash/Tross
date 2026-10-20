@@ -17,6 +17,12 @@
 #                     проводных) на 20–90 с каждые 3–8 «минут»
 #   SOAK_RESTARTS=N   хаос перезапусков: каждые N «минут» — мягкая остановка
 #                     или kill -9 с trossd -cleanup (как служба), запуск заново
+#   SOAK_DNS=1        резолвер «hash» стенда (свой адрес на имя) и DNS-нагрузка
+#                     50 запросов/с по кругу: промахи, наполнение множеств,
+#                     кэш (labsrv dnsload) → dns.txt
+#   SOAK_LIFE=1       «жизнь дома»: 4 устройства каждые 2 с открывают новые
+#                     соединения разных классов (labsrv life) → life.jsonl:
+#                     куда ушло каждое (по адресу у сервера и по conntrack)
 #   sudo systemctl stop tross-soak       # досрочно (стенд снимется)
 #
 # Результаты: ~/lab-results/<дата>-soak/ — metrics.jsonl (каждые 5 мин),
@@ -69,6 +75,7 @@ before=$(snap)
 cleanup() {
 	S pkill -INT -x trossd 2>/dev/null || true
 	S pkill -INT -x labmeasure 2>/dev/null || true
+	S pkill -INT -f '^[^ ]*/labsrv life' 2>/dev/null || true
 	sleep 2
 	S "$lab" down >/dev/null 2>&1 || true
 }
@@ -82,6 +89,14 @@ cfg=${SOAK_CONFIG:-configs/lab.yaml}
 if [ "$cfg" = cake ]; then
 	cfg=$out/lab-cake.yaml
 	scripts/lab-cake-config >"$cfg"
+fi
+if [ "${SOAK_DNS:-}" = 1 ]; then
+	awk '
+		/^  upstreams:/ { print "  upstreams: [{ name: hash, url: \"https://203.0.113.54/dns-query\", pools: [protected, fast] }]"; next }
+		/^  ca_file:/ { print "  ca_file: /run/tross-lab/dns-ca.pem"; next }
+		{ print }
+	' "$cfg" >"$out/lab-dns.yaml"
+	cfg=$out/lab-dns.yaml
 fi
 # start_daemon [any] — запуск и ожидание: isp1 поднят; any — лишь бы API
 # ответил (при хаосе каналов isp1 может быть оборван как раз сейчас).
@@ -175,6 +190,23 @@ if [ -n "${SOAK_RESTARTS:-}" ]; then
 			chaos "restart ($how): DAEMON DID NOT COME BACK"
 		fi
 	done) 9>&- &
+fi
+
+if [ "${SOAK_DNS:-}" = 1 ]; then
+	(while [ "$(now)" -lt "$((deadline - 330))" ]; do
+		for m in "miss load.example" "sets googlevideo.com" "hit load.example"; do
+			[ "$(now)" -lt "$((deadline - 330))" ] || break
+			# shellcheck disable=SC2086
+			set -- $m
+			echo "$(date +%T) $(client "$bin/labsrv" dnsload -names "$1" -suffix "$2" -qps 50 -duration 300s 2>&1)" >>"$out/dns.txt"
+		done
+	done) 9>&- &
+fi
+
+if [ "${SOAK_LIFE:-}" = 1 ]; then
+	for a in 11 12 13; do client ip addr add "192.168.77.$a/24" dev eth0; done
+	(client "$bin/labsrv" life -duration "$((deadline - $(now)))s" -out "$out/life.jsonl" \
+		>>"$out/life.log" 2>&1 || true) 9>&- &
 fi
 
 log "soak start, until $(date -d @"$deadline" +%T)"

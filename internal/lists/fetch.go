@@ -15,6 +15,10 @@ import (
 // LinkDialer — сокет через канал (resolver.LinkDialer).
 type LinkDialer func(link model.LinkID) *net.Dialer
 
+// ErrNoLink — нет исправного неплатного канала: не сбой источника, а
+// ожидание канала (после запуска монитор поднимает каналы не сразу).
+var ErrNoLink = errors.New("no usable unmetered link")
+
 // HTTPFetcher — загрузка через проводные каналы по очереди: links отдаёт
 // пригодные неплатные каналы по приоритету (большие списки через LTE не
 // качаются — квота). Имена хостов спрашиваются у своего резолвера (dns):
@@ -52,7 +56,7 @@ func HTTPFetcher(links func() []model.LinkID, dial LinkDialer, dns []string, tim
 	return func(ctx context.Context, url, etag string) (Fetched, error) {
 		ls := links()
 		if len(ls) == 0 {
-			return Fetched{}, errors.New("no usable unmetered link")
+			return Fetched{}, ErrNoLink
 		}
 		var errs []error
 		for _, l := range ls {

@@ -48,7 +48,7 @@ func TestRulesLayers(t *testing.T) {
 	if err := r.SetBuiltin(Builtin()); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.SetOnline("itdog", []model.DomainRule{rule("ntp.org", model.PurposeBypass), rule("blocked.example", model.PurposeBypass)}); err != nil {
+	if err := r.SetOnline("itdog", model.DomainRule{Purpose: model.PurposeBypass}, []Entry{{"ntp.org", model.MatchSuffix}, {"blocked.example", model.MatchSuffix}}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := r.Lookup("pool.ntp.org"); got.Purpose != model.PurposeNever || got.Layer != model.LayerBuiltin {
@@ -72,7 +72,7 @@ func TestRulesLayers(t *testing.T) {
 		t.Errorf("Match order: %+v", all)
 	}
 	// Источник заменяется и убирается целиком.
-	_ = r.SetOnline("itdog", nil)
+	_ = r.SetOnline("itdog", model.DomainRule{}, nil)
 	if got, ok := r.Lookup("other.blocked.example"); ok && got.Layer == model.LayerOnline {
 		t.Errorf("removed source still matches: %+v", got)
 	}
@@ -128,7 +128,7 @@ WWW.Upper.Example.
 		t.Fatal(err)
 	}
 	var got []string
-	for _, r := range p.Rules {
+	for _, r := range p.Entries {
 		got = append(got, string(r.Match)+":"+r.Pattern)
 	}
 	want := []string{
@@ -183,7 +183,7 @@ func TestParseGeosite(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []string
-	for _, r := range p.Rules {
+	for _, r := range p.Entries {
 		got = append(got, string(r.Match)+":"+r.Pattern)
 	}
 	if want := []string{"suffix:youtube.com", "exact:youtu.be", "keyword:ytimg"}; !slices.Equal(got, want) || p.Skipped != 1 {

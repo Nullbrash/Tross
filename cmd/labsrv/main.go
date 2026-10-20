@@ -1,18 +1,24 @@
 // Команда labsrv — тестовые серверы «интернета» стенда и клиент UDP-пинга.
 //
-//	labsrv serve -http :80 -udp :9000 [-portal :8080] [-doh IP:443 -dot IP:853 -dns-ca ca.pem -dns-answer IP]
-//	    HTTP (/, /generate_204, /success.txt, /bytes?n=, /sink), UDP-эхо,
+//	labsrv serve -http :80 -udp :9000 [-portal :8080] [-files dir] [-doh IP:443 -dot IP:853 -dns-ca ca.pem -dns-answer IP]
+//	    HTTP (/, /generate_204, /success.txt, /bytes?n=, /sink, /files/), UDP-эхо,
 //	    имитация страницы авторизации (captive portal) на отдельном порту,
 //	    DoH и DoT с самоподписанным сертификатом на IP (корень — в -dns-ca)
 //	labsrv udpping -target 203.0.113.10:9000 -rate 30 -n 90
 //	labsrv upload -url http://203.0.113.10/sink -n 50000000
 //	labsrv load -url http://203.0.113.10 -down 150 -up 50 -chunk 1000000 -churn -duration 60s
+//	labsrv dns -ca ca.pem -server 203.0.113.54=hash -server 203.0.113.56=servfail -udp :5353=answer:203.0.113.250
+//	    «резолверы» с поведением: answer:IP, hash (свой адрес на имя), servfail,
+//	    drop (молчание); «/150ms» — задержка ответа
+//	labsrv dnsload -server 192.168.77.1:53 -qps 500 -names miss|hit|sets -suffix googlevideo.com
+//	labsrv life -duration 8h -devices 192.168.77.10,192.168.77.11 -out life.jsonl
 //
 // UDP-пинг имитирует игровой трафик: мелкие пакеты с постоянной частотой;
 // печатает RTT (мин/сред/макс), джиттер и потери.
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -27,11 +33,13 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/net/ipv4"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: labsrv serve|udpping|upload|load [flags]")
+		fmt.Fprintln(os.Stderr, "usage: labsrv serve|udpping|upload|load|life|dns|dnsload [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -42,6 +50,12 @@ func main() {
 		err = udpping(os.Args[2:])
 	case "upload":
 		err = upload(os.Args[2:])
+	case "dns":
+		err = dnsServers(os.Args[2:])
+	case "dnsload":
+		err = dnsload(os.Args[2:])
+	case "life":
+		err = life(os.Args[2:])
 	case "load":
 		err = load(os.Args[2:])
 	default:
@@ -66,6 +80,7 @@ func serve(args []string) error {
 	dotAddr := fs.String("dot", "", "DoT listen IP:port")
 	dnsCA := fs.String("dns-ca", "", "where to write the self-signed DoH/DoT certificate (client root)")
 	dnsAns := fs.String("dns-answer", "", "IPv4 answer for any A query")
+	files := fs.String("files", "", "serve this directory at /files/ (online lists for loader tests)")
 	_ = fs.Parse(args)
 
 	if *dohAddr != "" {
@@ -108,25 +123,49 @@ func serve(args []string) error {
 			n -= chunk
 		}
 	})
+	// /whoami — адрес, с которого пришёл запрос: у каждого канала стенда свой
+	// (100.64.<номер>.2) — так клиент узнаёт, каким каналом ушло соединение.
+	mux.HandleFunc("GET /whoami", func(w http.ResponseWriter, r *http.Request) {
+		host, _, _ := net.SplitHostPort(r.RemoteAddr)
+		fmt.Fprintf(w, "src=%s\n", host)
+	})
+	if *files != "" {
+		mux.Handle("GET /files/", http.StripPrefix("/files/", http.FileServer(http.Dir(*files))))
+	}
 	// /sink — принять тело запроса (замер отдачи).
 	mux.HandleFunc("POST /sink", func(w http.ResponseWriter, r *http.Request) {
 		n, _ := io.Copy(io.Discard, r.Body)
 		fmt.Fprintf(w, "%d\n", n)
 	})
 
-	pc, err := net.ListenPacket("udp", *udpAddr)
+	conn, err := net.ListenPacket("udp4", *udpAddr)
 	if err != nil {
 		return err
 	}
+	// Слушающий все адреса (":9001") сокет иначе ответил бы с адреса
+	// интерфейса маршрута, а не с адреса запроса: клиент и NAT такой ответ
+	// не примут. Отвечаем с адреса назначения запроса (IP_PKTINFO).
+	pc := ipv4.NewPacketConn(conn)
+	_ = pc.SetControlMessage(ipv4.FlagDst, true)
 	go func() {
 		buf := make([]byte, 2048)
 		for {
-			n, addr, err := pc.ReadFrom(buf)
+			n, cm, addr, err := pc.ReadFrom(buf)
 			if err != nil {
 				log.Printf("udp: %v", err)
 				return
 			}
-			_, _ = pc.WriteTo(buf[:n], addr)
+			var wcm *ipv4.ControlMessage
+			if cm != nil && cm.Dst != nil {
+				wcm = &ipv4.ControlMessage{Src: cm.Dst}
+			}
+			reply := buf[:n]
+			if bytes.Contains(reply, []byte("whoami")) {
+				if ua, ok := addr.(*net.UDPAddr); ok {
+					reply = []byte("src=" + ua.IP.String() + "\n")
+				}
+			}
+			_, _ = pc.WriteTo(reply, wcm, addr)
 		}
 	}()
 	log.Printf("serving http %s, udp echo %s", *httpAddr, *udpAddr)

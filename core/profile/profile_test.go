@@ -127,4 +127,7 @@ func TestCatalogDomains(t *testing.T) {
 	if d, ok := off.Domains("steam"); !ok || len(d) != 0 {
 		t.Errorf("disabled service: %v %v — want known, no domains", d, ok)
 	}
+	if d, ok := off.Domains("steam/store"); !ok || len(d) != 0 {
+		t.Errorf("part of a disabled service: %v %v — want known, no domains", d, ok)
+	}
 }

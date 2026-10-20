@@ -51,10 +51,11 @@ type dnsService struct {
 	doh       map[netip.Addr]bool
 	intercept *interceptCheck
 
-	mu     sync.Mutex
-	up     bool
-	pins   []dataplane.Pin
-	pinsAt time.Time
+	mu       sync.Mutex
+	up       bool
+	pins     []dataplane.Pin
+	pinsAt   time.Time
+	pinsBusy bool
 }
 
 func newDNSService(cfg *config.Config, log *slog.Logger, dp dataplane.Dataplane, bus event.EventBus, spec dataplane.Spec, cat profile.Catalog, cls *classify.Engine, rules *lists.Rules, plan func() []decision.ClassPlan) (*dnsService, error) {
@@ -105,7 +106,7 @@ func newDNSService(cfg *config.Config, log *slog.Logger, dp dataplane.Dataplane,
 	}
 	var ups []resolver.UpstreamSpec
 	for _, u := range cfg.DNS.Upstreams {
-		ups = append(ups, resolver.UpstreamSpec{Name: u.Name, URL: u.URL})
+		ups = append(ups, resolver.UpstreamSpec{Name: u.Name, URL: u.URL, TLSName: u.TLSName})
 	}
 	s.res, err = resolver.New(resolver.Config{
 		Upstreams: ups, Policy: pol, Health: health,
@@ -153,7 +154,10 @@ func (s *dnsService) run(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	}
-	t := time.NewTicker(s.every)
+	// После неудачи — перепроверка через секунду, а не через интервал:
+	// иначе 3 неудачи подряд (по 2 с ожидания) — до 17 с без DNS, а
+	// обещано ≤ 15 с.
+	t := time.NewTimer(s.every)
 	defer t.Stop()
 	fails := 0
 	for {
@@ -180,6 +184,11 @@ func (s *dnsService) run(ctx context.Context) {
 			fails = 0
 			s.setUp(ctx, true, "resolver answers again")
 		}
+		next := s.every
+		if fails > 0 {
+			next = min(s.every, time.Second)
+		}
+		t.Reset(next)
 	}
 }
 
@@ -278,16 +287,33 @@ func weightedChoice(key string, shares []decision.LinkShare) model.LinkID {
 
 // devicePin — канал, за которым ядро держит устройство в этом классе или
 // сервисе.
+func (s *dnsService) readPins() ([]dataplane.Pin, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return s.dp.Pins(ctx)
+}
+
 func (s *dnsService) devicePin(client netip.Addr, c model.Classification) (model.LinkID, bool) {
 	s.mu.Lock()
-	if time.Since(s.pinsAt) > pinsEvery {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		pins, err := s.dp.Pins(ctx)
-		cancel()
-		if err == nil {
+	switch {
+	case s.pinsAt.IsZero():
+		if pins, err := s.readPins(); err == nil {
 			s.pins = pins
 		}
 		s.pinsAt = time.Now()
+	case time.Since(s.pinsAt) > pinsEvery && !s.pinsBusy:
+		// Обновление — в фоне: ответ не ждёт чтения ядра (десятки мс), а
+		// закрепления и так видны с опозданием до pinsEvery.
+		s.pinsBusy = true
+		go func() {
+			pins, err := s.readPins()
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if err == nil {
+				s.pins = pins
+			}
+			s.pinsAt, s.pinsBusy = time.Now(), false
+		}()
 	}
 	pins := s.pins
 	s.mu.Unlock()

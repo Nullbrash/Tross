@@ -38,13 +38,10 @@ func TestMeasureBigLists(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", id, err)
 		}
-		for i := range p.Rules {
-			p.Rules[i].Purpose = model.PurposeBypass
-		}
-		if err := r.SetOnline(id, p.Rules); err != nil {
+		if err := r.SetOnline(id, model.DomainRule{Purpose: model.PurposeBypass}, p.Entries); err != nil {
 			t.Logf("%s: some rules rejected: %v", id, err)
 		}
-		t.Logf("%s: %d rules (skipped %d, bad %d) from %d bytes in %v", id, len(p.Rules), p.Skipped, p.Bad, len(data), time.Since(t0).Round(time.Millisecond))
+		t.Logf("%s: %d rules (skipped %d, bad %d) from %d bytes in %v", id, len(p.Entries), p.Skipped, p.Bad, len(data), time.Since(t0).Round(time.Millisecond))
 	}
 	text := func(b []byte) (Parsed, error) { return ParseText(bytes.NewReader(b)) }
 	load("itdog", "src1", text)

@@ -343,6 +343,11 @@ func (c *Config) validateDNS(p *problems) {
 		if err != nil || pu.Host == "" || pu.Scheme != "https" && pu.Scheme != "tls" {
 			p.add(fmt.Sprintf("dns.upstreams[%d].url", i), "want https://host/path (DoH) or tls://host (DoT), got %q", u.URL)
 		}
+		if u.TLSName != "" {
+			if n, err := lists.NormalizeName(u.TLSName); err != nil || n != u.TLSName || !strings.Contains(n, ".") {
+				p.add(fmt.Sprintf("dns.upstreams[%d].tls_name", i), "want a lowercase host name, got %q", u.TLSName)
+			}
+		}
 	}
 	for _, a := range d.Bootstrap {
 		if !a.Is4() {

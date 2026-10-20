@@ -113,6 +113,11 @@ func (c Catalog) Domains(ref string) ([]string, bool) {
 		if s.ID != svc {
 			continue
 		}
+		// Выключенный сервис (в том числе заменённый пользователем без
+		// частей) существует, но доменов не даёт — и у частей тоже.
+		if s.Disabled {
+			return nil, true
+		}
 		var out []string
 		found := part == ""
 		for _, p := range s.Parts {
@@ -121,9 +126,7 @@ func (c Catalog) Domains(ref string) ([]string, bool) {
 			}
 			found = true
 			for _, m := range p.Match {
-				if !s.Disabled {
-					out = append(out, m.Domains...)
-				}
+				out = append(out, m.Domains...)
 			}
 		}
 		return out, found

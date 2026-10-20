@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -115,6 +116,9 @@ func (m *Manager) LoadCache() {
 	}
 }
 
+// bigList — после такого списка память разбора отдаётся системе сразу.
+const bigList = 100_000
+
 // apply — разобрать и заменить правила источника.
 func (m *Manager) apply(s corelists.Source, data []byte, md meta) error {
 	var p corelists.Parsed
@@ -128,17 +132,20 @@ func (m *Manager) apply(s corelists.Source, data []byte, md meta) error {
 	if err != nil {
 		return err
 	}
-	if len(p.Rules) == 0 {
+	if len(p.Entries) == 0 {
 		return errors.New("no domains")
 	}
-	for i := range p.Rules {
-		p.Rules[i].Purpose, p.Rules[i].Class = s.Purpose, s.Class
-	}
-	if err := m.opts.Rules.SetOnline(s.ID, p.Rules); err != nil {
+	if err := m.opts.Rules.SetOnline(s.ID, model.DomainRule{Purpose: s.Purpose, Class: s.Class}, p.Entries); err != nil {
 		// Неверные правила отброшены, остальные действуют — для журнала.
 		m.opts.Log.Debug("lists: some rules rejected", "source", s.ID, "err", err)
 	}
-	md.Domains = len(p.Rules)
+	md.Domains = len(p.Entries)
+	if len(p.Entries) >= bigList {
+		// Разбор большого списка — сотни МБ временной памяти; Go сам отдаёт
+		// её системе медленно, а списки обновляются раз в сутки.
+		p = corelists.Parsed{}
+		debug.FreeOSMemory()
+	}
 	m.mu.Lock()
 	m.meta[s.ID] = md
 	st := m.status[s.ID]
@@ -157,7 +164,7 @@ func (m *Manager) Run(ctx context.Context) {
 	for {
 		for _, s := range m.enabled() {
 			if m.due(s, time.Now()) {
-				if err := m.refresh(ctx, s); err != nil && ctx.Err() == nil {
+				if err := m.refresh(ctx, s); err != nil && ctx.Err() == nil && !errors.Is(err, ErrNoLink) {
 					m.opts.Log.Warn("lists: refresh failed, cached list stays", "source", s.ID, "err", err)
 				}
 			}
@@ -204,7 +211,11 @@ func (m *Manager) refresh(ctx context.Context, s corelists.Source) (err error) {
 	defer func() {
 		m.mu.Lock()
 		if err != nil {
-			m.failed[s.ID] = time.Now()
+			// Без канала пауза после сбоя не ставится: иначе после запуска
+			// (каналы ещё не подняты) список ждал бы час.
+			if !errors.Is(err, ErrNoLink) {
+				m.failed[s.ID] = time.Now()
+			}
 			m.status[s.ID].Error = err.Error()
 		} else {
 			delete(m.failed, s.ID)

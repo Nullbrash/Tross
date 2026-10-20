@@ -137,7 +137,7 @@ func newBench(t *testing.T) *bench {
 	rules := lists.NewRules()
 	_ = rules.SetBuiltin(lists.Builtin())
 	r, err := New(Config{
-		Upstreams: []UpstreamSpec{{"prot", b.prot.srv.URL + "/dns-query"}, {"fast", b.fast.srv.URL + "/dns-query"}, {"fast2", b.fast2.srv.URL + "/dns-query"}},
+		Upstreams: []UpstreamSpec{{Name: "prot", URL: b.prot.srv.URL + "/dns-query"}, {Name: "fast", URL: b.fast.srv.URL + "/dns-query"}, {Name: "fast2", URL: b.fast2.srv.URL + "/dns-query"}},
 		Policy:    pol, Health: h, Cache: coredns.NewCache(coredns.DefaultCacheParams(100)), Rules: rules,
 		ClassSet:  func(model.RuleLayer, model.TrafficClass) string { return "" },
 		SetTTLMin: 5 * time.Minute, SetTTLMax: 12 * time.Hour, Canary: true,
