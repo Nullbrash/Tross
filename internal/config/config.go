@@ -13,6 +13,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	coredns "tross/core/dns"
+	coredpi "tross/core/dpi"
 	"tross/core/lists"
 	"tross/core/model"
 	"tross/core/profile"
@@ -316,12 +317,27 @@ func (l Lists) ManualRules() []model.DomainRule {
 }
 
 type DPI struct {
-	Enabled bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+	// NFQWS — движок nfqws2 (zapret2), LuaDir — его библиотеки; Version —
+	// выпуск из файла VERSION рядом с движком: иной — движок не запускается.
 	NFQWS   string `yaml:"nfqws"`
+	LuaDir  string `yaml:"lua_dir"`
+	Version string `yaml:"version"`
+	// Dir — списки доменов движка: движок перечитывает их, уже сбросив
+	// права root, — каталог должен быть доступен на чтение всем.
+	Dir string `yaml:"dir"`
+	// Debug — подробный журнал движка (dir/<канал>.debug.log); только для
+	// разбора поломок.
+	Debug bool `yaml:"debug"`
 	// QueueBase — номер NFQUEUE первого канала; остальные идут подряд.
-	QueueBase       uint16        `yaml:"queue_base"`
-	RecheckInterval time.Duration `yaml:"recheck_interval"`
-	ProbeDomains    []string      `yaml:"probe_domains"`
+	QueueBase uint16 `yaml:"queue_base"`
+	// Links — каналы с движком; пусто — все.
+	Links           []model.LinkID `yaml:"links"`
+	RecheckInterval time.Duration  `yaml:"recheck_interval"`
+	ProbeDomains    []string       `yaml:"probe_domains"`
+	// AllowRisks — какие рискованные стратегии подбирать (ts, syn); по
+	// умолчанию — никаких.
+	AllowRisks []coredpi.Risk `yaml:"allow_risks"`
 }
 
 type Proxy struct {

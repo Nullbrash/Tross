@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	coredpi "tross/core/dpi"
 	"tross/core/event"
 	"tross/core/model"
 )
@@ -250,5 +251,48 @@ func TestDNSDebug(t *testing.T) {
 	}
 	if rows, _ := s.DNSDebug(ctx); len(rows) != 0 {
 		t.Errorf("after purge: %+v", rows)
+	}
+}
+
+func TestDPIVerdictsAndScores(t *testing.T) {
+	s := openMem(t)
+	ctx := context.Background()
+	at := time.Unix(1_800_000_000, 0)
+	vs := []DPIVerdict{
+		{Key: "blocked.example", Link: "isp1", Verdict: coredpi.Verdict{Method: coredpi.MethodDPI, Strategy: "split-1-midsld", Kind: coredpi.KindSNI, CheckedAt: at}},
+		{Key: "blocked.example", Link: "isp2", Verdict: coredpi.Verdict{Method: coredpi.MethodDirect, Kind: coredpi.KindNone, CheckedAt: at}},
+	}
+	if err := s.SaveDPIVerdicts(ctx, vs); err != nil {
+		t.Fatal(err)
+	}
+	// Замена по ключу и каналу.
+	vs[1].Method = coredpi.MethodElsewhere
+	if err := s.SaveDPIVerdicts(ctx, vs[1:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TouchDPIVerdicts(ctx, []string{"blocked.example"}, at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.DPIVerdicts(ctx)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("verdicts %+v, %v", got, err)
+	}
+	if got[0].Link != "isp1" || got[0].Strategy != "split-1-midsld" || got[0].Kind != coredpi.KindSNI || !got[0].CheckedAt.Equal(at) || !got[0].UsedAt.Equal(at.Add(time.Hour)) {
+		t.Errorf("isp1: %+v", got[0])
+	}
+	if got[1].Method != coredpi.MethodElsewhere {
+		t.Errorf("isp2 not replaced: %+v", got[1])
+	}
+
+	sc := []coredpi.Score{{Strategy: "a", Opened: 2, LastOK: at}, {Strategy: "b", Failed: 3}}
+	if err := s.SaveDPIScores(ctx, "isp1", sc); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveDPIScores(ctx, "isp1", sc[:1]); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.DPIScores(ctx)
+	if err != nil || len(all["isp1"]) != 1 || all["isp1"][0].Opened != 2 || !all["isp1"][0].LastOK.Equal(at) {
+		t.Errorf("scores %+v, %v — want the link's scores replaced", all, err)
 	}
 }

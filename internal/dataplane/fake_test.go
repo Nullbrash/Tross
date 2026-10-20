@@ -20,7 +20,7 @@ func TestFakeRecordsOps(t *testing.T) {
 		Links:        []LinkSpec{{Link: model.Link{ID: "isp1", Interface: "eth1"}, Table: 101, FwMark: 0x100}},
 	}
 	_ = f.Setup(ctx, spec)
-	_ = f.AddToSet(ctx, SetDPI, netip.MustParseAddr("203.0.113.1"), time.Minute)
+	_ = f.AddToSet(ctx, SetProxy, netip.MustParseAddr("203.0.113.1"), time.Minute)
 	_ = f.Teardown(ctx)
 
 	ops := f.Ops()

@@ -47,9 +47,12 @@ type ClassSet func(layer model.RuleLayer, class model.TrafficClass) string
 type Targets struct {
 	Sets    []string
 	Timeout time.Duration
-	// Bypass — кандидат на обход; методы (множества zapret и прокси) —
-	// этапы 5–6, пока — только для объяснения.
-	Bypass bool
+	// Bypass — кандидат на обход; BypassKey — шаблон его правила (ключ
+	// решения по домену на канале: все поддомены — одно решение),
+	// BypassLayer — слой правила (ручное — желание пользователя).
+	Bypass      bool
+	BypassKey   string
+	BypassLayer model.RuleLayer
 	// Never — встроенный или ручной «никогда не трогать» перекрыл обход.
 	Never bool
 	// Inside — доступно только изнутри России (не через зарубежный выход).
@@ -71,6 +74,9 @@ func Decide(domain string, ttl time.Duration, ix *SetIndex, rules []model.Domain
 		case !bypassDone && (r.Purpose == model.PurposeBypass || r.Purpose == model.PurposeNever):
 			bypassDone = true
 			t.Bypass, t.Never = r.Purpose == model.PurposeBypass, r.Purpose == model.PurposeNever
+			if t.Bypass {
+				t.BypassKey, t.BypassLayer = r.Pattern, r.Layer
+			}
 		case r.Purpose == model.PurposeInside:
 			t.Inside = true
 		}

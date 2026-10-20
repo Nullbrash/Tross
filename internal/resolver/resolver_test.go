@@ -359,3 +359,30 @@ func TestOwnHosts(t *testing.T) {
 		t.Errorf("outside client must get the public answer (fake: NXDOMAIN): %v", m.RCode)
 	}
 }
+
+// Кандидат на обход: множества — от демона по ключу правила (шаблону
+// списка), до ответа; домен вне списков хук не вызывает.
+func TestBypassSetsBeforeAnswer(t *testing.T) {
+	b := newBench(t)
+	_ = b.r.cfg.Rules.SetOnline("lab", model.DomainRule{Purpose: model.PurposeBypass}, []lists.Entry{{Pattern: "blocked.example", Match: model.MatchSuffix}})
+	var keys []string
+	b.r.cfg.Bypass = func(key string, layer model.RuleLayer, name string, _ netip.Addr) []dataplane.SetName {
+		keys = append(keys, key+"|"+string(layer)+"|"+name)
+		return []dataplane.SetName{dataplane.DPISet(1)}
+	}
+	for _, f := range []*fakeDoH{b.fast, b.fast2} {
+		f.set("www.blocked.example", fakeAnswer{addr: "203.0.113.20"})
+		f.set("open.example", fakeAnswer{addr: "203.0.113.21"})
+	}
+	ctx := context.Background()
+	if m := parse(t, b.r.Handle(ctx, mkQuery(t, 1, "www.blocked.example", dnsmessage.TypeA, false), client, 512)); len(m.Answers) != 1 {
+		t.Fatalf("answer %+v", m)
+	}
+	if !b.sink.has("tross_dpi1", "203.0.113.20") {
+		t.Errorf("bypass set not filled before the answer: %+v", b.sink.elems)
+	}
+	_ = b.r.Handle(ctx, mkQuery(t, 2, "open.example", dnsmessage.TypeA, false), client, 512)
+	if want := []string{"blocked.example|online|www.blocked.example"}; !slices.Equal(keys, want) {
+		t.Errorf("hook calls %v, want %v", keys, want)
+	}
+}

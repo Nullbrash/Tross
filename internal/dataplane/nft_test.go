@@ -23,7 +23,7 @@ func TestRenderBase(t *testing.T) {
 	got := renderBase(testSpec())
 	for _, want := range []string{
 		"add table inet tross\ndelete table inet tross\ntable inet tross {",
-		"set tross_dpi4 {", "set tross_proxy4 {", "flags timeout",
+		"set tross_proxy4 {", "flags timeout",
 		"type filter hook prerouting priority mangle;",
 		"ct mark and 0xff00 != 0 meta mark set ct mark and 0x700ffff return",
 		`iifname "lan" ct state new jump classify`,

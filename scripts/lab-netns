@@ -134,7 +134,7 @@ start_servers() {
 	# сертификата читают тесты монитора (labDoHCA).
 	# /files/ — раздача онлайн-списков для тестов загрузчика.
 	mkdir -p "$STATE/files"
-	nsx tl-inet setsid "$BIN/labsrv" serve -http "$SRV_IP:80" -udp "$SRV_IP:9000" -portal "$SRV_IP:8080" -files "$STATE/files" \
+	nsx tl-inet setsid "$BIN/labsrv" serve -http "$SRV_IP:80" -udp "$SRV_IP:9000" -portal "$SRV_IP:8080" -https "$SRV_IP:443" -files "$STATE/files" \
 		-doh "$DNS_IP:443" -dot "$DNS_IP:853" -dns-ca "$STATE/doh-ca.pem" -dns-answer "$SRV_IP" \
 		> "$STATE/labsrv.log" 2>&1 < /dev/null &
 	echo $! > "$STATE/labsrv.pid"

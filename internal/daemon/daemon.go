@@ -124,8 +124,12 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	var res *resolver.Resolver
 	var dnsStatus func(context.Context) api.DNSStatus
+	var dpiSvc *dpiService
 	if dnsSvc != nil {
 		res = dnsSvc.res
+		// Обход без резолвера невозможен: только он знает «домен → адрес».
+		dpiSvc = newDPIService(ctx, cfg, log, bus, st, dp, spec, listsAPI.Manual, dnsSvc.doh)
+		res.SetBypass(dpiSvc.bypass)
 	}
 	dbg := newDNSDebug(log, st, res, bus)
 	if dnsSvc != nil {
@@ -177,6 +181,9 @@ func Run(ctx context.Context, opts Options) error {
 		wg.Go(func() { dnsSvc.intercept.run(runCtx, mon, dnsSvc.dial) })
 	}
 	wg.Go(func() { lists.Run(runCtx) })
+	if dpiSvc != nil {
+		wg.Go(func() { dpiSvc.run(runCtx) })
+	}
 	wg.Go(func() { dbg.run(runCtx) })
 	if !cfg.Daemon.DryRun && cfg.Daemon.Control != "" {
 		// Команды root (отладочный журнал DNS) — только через этот сокет,
@@ -366,6 +373,13 @@ func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
 		spec.DNS = dataplane.DNSSpec{Listen: listen, Fallback: cfg.DNS.Fallback, Default: cfg.Devices.DefaultDNSMode, Devices: map[netip.Addr]model.DNSMode{}}
 		for _, d := range cfg.DNS.Devices {
 			spec.DNS.Devices[d.Address] = d.Mode
+		}
+	}
+	if cfg.DPI.Enabled {
+		for i, l := range cfg.Links {
+			if len(cfg.DPI.Links) == 0 || slices.Contains(cfg.DPI.Links, l.ID) {
+				spec.DPI.Links = append(spec.DPI.Links, dataplane.DPILink{Index: i, Queue: cfg.DPI.QueueBase + uint16(i)})
+			}
 		}
 	}
 	return spec, nil

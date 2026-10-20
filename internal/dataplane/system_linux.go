@@ -143,6 +143,9 @@ func validateSpec(spec Spec) error {
 	if err := validateDNS(spec.DNS); err != nil {
 		return fmt.Errorf("dataplane: %w", err)
 	}
+	if err := validateDPI(spec); err != nil {
+		return fmt.Errorf("dataplane: %w", err)
+	}
 	return nil
 }
 

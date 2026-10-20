@@ -8,6 +8,7 @@ import (
 	"errors"
 	"time"
 
+	coredpi "tross/core/dpi"
 	"tross/core/event"
 	"tross/core/model"
 )
@@ -145,9 +146,28 @@ type Store interface {
 	// PurgeDNSDebug удаляет записи раньше before; нулевое время — все.
 	PurgeDNSDebug(ctx context.Context, before time.Time) (int64, error)
 
+	// SaveDPIVerdicts — решения по доменам на каналах (замена по ключу и
+	// каналу); TouchDPIVerdicts — когда домен спрашивали (для перепроверки
+	// только используемых), пачкой.
+	SaveDPIVerdicts(ctx context.Context, vs []DPIVerdict) error
+	TouchDPIVerdicts(ctx context.Context, keys []string, at time.Time) error
+	DPIVerdicts(ctx context.Context) ([]DPIVerdict, error)
+	// SaveDPIScores заменяет итоги стратегий канала.
+	SaveDPIScores(ctx context.Context, link model.LinkID, scores []coredpi.Score) error
+	DPIScores(ctx context.Context) (map[model.LinkID][]coredpi.Score, error)
+
 	// SizeBytes — размер файла базы (0 для базы в памяти).
 	SizeBytes() int64
 	Close() error
+}
+
+// DPIVerdict — решение по домену (ключ — шаблон правила списка, под
+// которое он попал) на канале.
+type DPIVerdict struct {
+	Key  string       `json:"key"`
+	Link model.LinkID `json:"link"`
+	coredpi.Verdict
+	UsedAt time.Time `json:"used_at,omitzero"`
 }
 
 // DNSDebugRow — запрос в отладочном журнале DNS.

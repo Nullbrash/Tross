@@ -478,10 +478,10 @@ func TestAddToSet(t *testing.T) {
 	if err := s.Setup(ctx, standSpec()); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddToSet(ctx, SetDPI, netip.MustParseAddr("203.0.113.99"), time.Minute); err != nil {
+	if err := s.AddToSet(ctx, SetProxy, netip.MustParseAddr("203.0.113.99"), time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	out, err := run(t, "nft", "list", "set", "inet", "tross", string(SetDPI))
+	out, err := run(t, "nft", "list", "set", "inet", "tross", string(SetProxy))
 	if err != nil || !strings.Contains(out, "203.0.113.99") || !strings.Contains(out, "expires") {
 		t.Fatalf("set content: %v\n%s", err, out)
 	}

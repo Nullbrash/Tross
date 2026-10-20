@@ -60,7 +60,13 @@ func (s *System) AddToSet(ctx context.Context, set SetName, addr netip.Addr, ttl
 }
 
 func (s *System) knownSetsLocked() []SetName {
-	out := append([]SetName{SetDPI, SetProxy}, s.spec.Classify.domainSets()...)
+	out := append([]SetName{SetProxy}, s.spec.Classify.domainSets()...)
+	for _, l := range s.spec.DPI.Links {
+		out = append(out, DPISet(l.Index))
+	}
+	if len(s.spec.DPI.Links) > 0 {
+		out = append(out, SetDPIDevices)
+	}
 	for i := range s.spec.Links {
 		out = append(out, DomainLinkSet(i))
 	}

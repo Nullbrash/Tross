@@ -24,7 +24,6 @@ var ErrUnsupportedOS = errors.New("dataplane: kernel mode is supported only on l
 type SetName string
 
 const (
-	SetDPI   SetName = "tross_dpi4"
 	SetProxy SetName = "tross_proxy4"
 )
 
@@ -49,6 +48,8 @@ type Spec struct {
 	Guard    InboundGuard
 	// DNS — перехват DNS домашней сети (резолвер демона, запасной).
 	DNS DNSSpec
+	// DPI — каналы с движком обхода DPI.
+	DPI DPISpec
 }
 
 // SetElement — адрес в множество ядра на срок.

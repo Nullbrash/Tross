@@ -34,7 +34,7 @@ func renderBase(spec Spec) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "add table inet %s\ndelete table inet %s\n", nftTable, nftTable)
 	fmt.Fprintf(&b, "table inet %s {\n", nftTable)
-	fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t}\n", SetDPI)
+	b.WriteString(renderDPI(spec))
 	fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t}\n", SetProxy)
 	b.WriteString(renderClassifySets(c, spec.Links))
 	b.WriteString(renderClassifyChains(c))

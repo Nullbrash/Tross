@@ -60,8 +60,11 @@ type Config struct {
 	SetTTLMin, SetTTLMax time.Duration
 	Canary               bool
 	Route                Route
-	Sink                 SetSink
-	Dial                 Dialer
+	// Bypass — множества обхода для домена-кандидата (ключ — шаблон его
+	// правила): каналы, где ему нужен обход; nil — обхода нет.
+	Bypass func(key string, layer model.RuleLayer, name string, client netip.Addr) []dataplane.SetName
+	Sink   SetSink
+	Dial   Dialer
 	// RootCAs — корни для DoH/DoT; nil — системные (свои — для стенда).
 	RootCAs *x509.CertPool
 	// Timeout — ответ одного сервера.
@@ -119,6 +122,11 @@ func New(cfg Config) (*Resolver, error) {
 
 // SetIndex — множества правил и профилей меняются вместе с классификацией.
 func (r *Resolver) SetIndex(ix *coredns.SetIndex) { r.sets.Store(ix) }
+
+// SetBypass — хук множеств обхода (Config.Bypass); только до Serve.
+func (r *Resolver) SetBypass(fn func(key string, layer model.RuleLayer, name string, client netip.Addr) []dataplane.SetName) {
+	r.cfg.Bypass = fn
+}
 
 func (r *Resolver) Stats() Stats {
 	s := Stats{Queries: r.queries.Load(), CacheHits: r.hits.Load(), Failures: r.failures.Load()}
@@ -320,6 +328,11 @@ func (r *Resolver) fillSets(ctx context.Context, name string, client netip.Addr,
 	}
 	t := coredns.Decide(name, ttl, r.sets.Load(), r.cfg.Rules.Match(name), r.cfg.ClassSet, r.cfg.SetTTLMin, r.cfg.SetTTLMax)
 	sets := slices.Clone(t.Sets)
+	if t.Bypass && r.cfg.Bypass != nil {
+		for _, s := range r.cfg.Bypass(t.BypassKey, t.BypassLayer, name, client) {
+			sets = append(sets, string(s))
+		}
+	}
 	if _, pin, ok := r.cfg.Route(name, client); ok && pin != "" {
 		sets = append(sets, string(pin))
 	}

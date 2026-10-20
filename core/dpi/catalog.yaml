@@ -1,0 +1,41 @@
+# Кандидаты для автоподбора стратегий обхода DPI (nfqws2). Порядок — от
+# простых к сложным: при равном итоге проверки выбирается более ранняя.
+# Аргументы — в форме документации zapret2 для указанной версии движка;
+# на собранном движке каждая проверяется пробным запуском.
+# Риски выводятся из шагов (core/dpi.Strategy.Risks): tcp_ts* — «ts»,
+# wssize/syndata — «syn»; такие по умолчанию не подбираются.
+engine: zapret2
+strategies:
+  - id: split-1-midsld
+    payload: tls_client_hello
+    steps: ["multisplit:pos=1,midsld"]
+  - id: split-midsld
+    payload: tls_client_hello
+    steps: ["multisplit:pos=midsld"]
+  - id: disorder-1-midsld
+    payload: tls_client_hello
+    steps: ["multidisorder:pos=1,midsld"]
+  - id: disorder-midsld
+    payload: tls_client_hello
+    steps: ["multidisorder:pos=midsld"]
+  - id: fake-md5-split
+    payload: tls_client_hello
+    steps: ["fake:blob=fake_default_tls:tcp_md5", "multisplit:pos=1,midsld"]
+  - id: fake-md5-mod-disorder
+    payload: tls_client_hello
+    steps: ["fake:blob=fake_default_tls:tcp_md5:tls_mod=rnd,rndsni,dupsid", "multidisorder:pos=1,midsld"]
+  - id: hostfakesplit-md5
+    payload: tls_client_hello
+    steps: ["hostfakesplit:tcp_md5"]
+  - id: oob-midsld
+    payload: tls_client_hello
+    steps: ["oob:urp=midsld"]
+  # Ниже — с риском: только если разрешить явно.
+  - id: fakedsplit-badack
+    payload: tls_client_hello
+    steps: ["fakedsplit:pos=midsld:tcp_ack=-66000:tcp_ts_up"]
+    note: badack на Linux требует tcp_ts_up — у клиентов без timestamps не работает
+  - id: wssize-1
+    payload: tls_client_hello
+    steps: ["wssize:wsize=1:scale=6"]
+    note: фаза SYN — в доменной схеме имя ещё неизвестно

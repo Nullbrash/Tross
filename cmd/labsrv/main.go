@@ -11,6 +11,8 @@
 //	    «резолверы» с поведением: answer:IP, hash (свой адрес на имя), servfail,
 //	    drop (молчание); «/150ms» — задержка ответа
 //	labsrv dnsload -server 192.168.77.1:53 -qps 500 -names miss|hit|sets -suffix googlevideo.com
+//	labsrv tlsget -addr 203.0.113.10:443 -sni name.example -path /whoami
+//	    HTTPS-запрос по адресу с любым именем в SNI (сертификат не проверяется)
 //	labsrv life -duration 8h -devices 192.168.77.10,192.168.77.11 -out life.jsonl
 //
 // UDP-пинг имитирует игровой трафик: мелкие пакеты с постоянной частотой;
@@ -19,6 +21,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -31,6 +34,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -39,7 +43,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: labsrv serve|udpping|upload|load|life|dns|dnsload [flags]")
+		fmt.Fprintln(os.Stderr, "usage: labsrv serve|udpping|upload|load|life|dns|dnsload|tlsget [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -54,6 +58,8 @@ func main() {
 		err = dnsServers(os.Args[2:])
 	case "dnsload":
 		err = dnsload(os.Args[2:])
+	case "tlsget":
+		err = tlsget(os.Args[2:])
 	case "life":
 		err = life(os.Args[2:])
 	case "load":
@@ -81,6 +87,7 @@ func serve(args []string) error {
 	dnsCA := fs.String("dns-ca", "", "where to write the self-signed DoH/DoT certificate (client root)")
 	dnsAns := fs.String("dns-answer", "", "IPv4 answer for any A query")
 	files := fs.String("files", "", "serve this directory at /files/ (online lists for loader tests)")
+	httpsAddr := fs.String("https", "", "also serve the same over TLS here (IP:port; any SNI, self-signed)")
 	_ = fs.Parse(args)
 
 	if *dohAddr != "" {
@@ -168,6 +175,19 @@ func serve(args []string) error {
 			_, _ = pc.WriteTo(reply, wcm, addr)
 		}
 	}()
+	if *httpsAddr != "" {
+		ap, err := netip.ParseAddrPort(*httpsAddr)
+		if err != nil {
+			return fmt.Errorf("-https: %w", err)
+		}
+		cert, _, err := selfSigned(ap.Addr())
+		if err != nil {
+			return err
+		}
+		tsrv := &http.Server{Addr: *httpsAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second,
+			TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}}
+		go func() { log.Printf("https: %v", tsrv.ListenAndServeTLS("", "")) }()
+	}
 	log.Printf("serving http %s, udp echo %s", *httpAddr, *udpAddr)
 	srv := &http.Server{Addr: *httpAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	return srv.ListenAndServe()
@@ -293,4 +313,33 @@ func printStats(sent int, rtts []time.Duration) {
 	}
 	fmt.Printf("sent %d, received %d, loss %.1f%%, rtt min/avg/max %.2f/%.2f/%.2f ms, jitter %.2f ms\n",
 		sent, len(rtts), loss, ms(minR), ms(sum)/float64(len(rtts)), ms(maxR), jitter)
+}
+
+// tlsget — HTTPS по адресу с заданным именем в SNI: проверка обхода DPI
+// на стенде (имя решает hostlist движка, адрес — множество обхода).
+func tlsget(args []string) error {
+	fs := flag.NewFlagSet("tlsget", flag.ExitOnError)
+	addr := fs.String("addr", "203.0.113.10:443", "server IP:port")
+	sni := fs.String("sni", "", "name in ClientHello")
+	path := fs.String("path", "/whoami", "request path")
+	timeout := fs.Duration("timeout", 5*time.Second, "overall timeout")
+	_ = fs.Parse(args)
+	start := time.Now()
+	d := &net.Dialer{Timeout: *timeout}
+	c, err := tls.DialWithDialer(d, "tcp4", *addr, &tls.Config{ServerName: *sni, InsecureSkipVerify: true}) //nolint:gosec // стенд: самоподписанный сервер
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(*timeout))
+	if _, err := fmt.Fprintf(c, "GET %s HTTP/1.0\r\nHost: %s\r\n\r\n", *path, *sni); err != nil {
+		return err
+	}
+	body, err := io.ReadAll(io.LimitReader(c, 1<<20))
+	if err != nil && len(body) == 0 {
+		return err
+	}
+	_, b, _ := strings.Cut(string(body), "\r\n\r\n")
+	fmt.Printf("%s (%d ms)\n", strings.TrimSpace(b), time.Since(start).Milliseconds())
+	return nil
 }

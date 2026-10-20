@@ -7,11 +7,13 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
 
 	coredns "tross/core/dns"
+	coredpi "tross/core/dpi"
 	"tross/core/lists"
 	"tross/core/model"
 	"tross/core/profile"
@@ -503,8 +505,28 @@ func (c *Config) validateDPI(p *problems) {
 	if !d.Enabled {
 		return
 	}
-	if d.NFQWS == "" {
-		p.add("dpi.nfqws", "required when dpi is enabled")
+	if !path.IsAbs(d.NFQWS) {
+		p.add("dpi.nfqws", "want an absolute path, got %q", d.NFQWS)
+	}
+	if !path.IsAbs(d.LuaDir) {
+		p.add("dpi.lua_dir", "want an absolute path, got %q", d.LuaDir)
+	}
+	if !path.IsAbs(d.Dir) {
+		p.add("dpi.dir", "want an absolute path, got %q", d.Dir)
+	}
+	known := map[model.LinkID]bool{}
+	for _, l := range c.Links {
+		known[l.ID] = true
+	}
+	for _, l := range d.Links {
+		if !known[l] {
+			p.add("dpi.links", "unknown link %q", l)
+		}
+	}
+	for _, r := range d.AllowRisks {
+		if r != coredpi.RiskTS && r != coredpi.RiskSYN {
+			p.add("dpi.allow_risks", "unknown risk %q (want ts, syn)", r)
+		}
 	}
 	if int(d.QueueBase)+len(c.Links) > 65536 {
 		p.add("dpi.queue_base", "queues for all links must fit 0..65535")

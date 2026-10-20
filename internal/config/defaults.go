@@ -15,6 +15,10 @@ import (
 // 0x40000000 — диапазоны не должны пересекаться.
 const LinkMarkMask uint32 = 0x0000ff00
 
+// DPIMarkMask — бит fwmark пакетов движка обхода (совпадает с
+// dataplane.DPIMark и меткой nfqws2 по умолчанию).
+const DPIMarkMask uint32 = 0x40000000
+
 // TinMarkMask — биты fwmark с корзиной CAKE класса (совпадает с
 // dataplane.TinMarkMask); метки прокси не должны их задевать.
 const TinMarkMask uint32 = 0x07000000
@@ -180,7 +184,10 @@ func (c *Config) applyDefaults() {
 		orDefault(&c.Lists.Sources[i].Purpose, lists.PurposeBypass)
 	}
 
-	orDefault(&c.DPI.NFQWS, "/opt/zapret/nfq/nfqws")
+	orDefault(&c.DPI.NFQWS, "/opt/zapret2/nfqws2")
+	orDefault(&c.DPI.LuaDir, "/opt/zapret2/lua")
+	orDefault(&c.DPI.Dir, "/run/tross-dpi")
+	orDefault(&c.DPI.Version, "v1.0.5.2")
 	orDefault(&c.DPI.QueueBase, 200)
 	orDefault(&c.DPI.RecheckInterval, 24*time.Hour)
 

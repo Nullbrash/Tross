@@ -470,3 +470,32 @@ dns: { listen: ["192.168.1.1:53"] }
 		}
 	}
 }
+
+func TestDPIMarkMatchesDataplane(t *testing.T) {
+	if DPIMarkMask != dataplane.DPIMark || DPIMarkMask&(LinkMarkMask|TinMarkMask) != 0 {
+		t.Fatalf("dpi mark %#x: must equal dataplane %#x and not overlap link or tin bits", DPIMarkMask, dataplane.DPIMark)
+	}
+}
+
+func TestDPISection(t *testing.T) {
+	cfg, err := Parse([]byte(minimal + "dpi: { enabled: true }\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := cfg.DPI; d.NFQWS != "/opt/zapret2/nfqws2" || d.LuaDir != "/opt/zapret2/lua" || d.Version == "" || d.QueueBase != 200 {
+		t.Errorf("defaults: %+v", d)
+	}
+	for yaml, want := range map[string]string{
+		"dpi: { enabled: true, nfqws: nfqws2 }":         "dpi.nfqws",
+		"dpi: { enabled: true, lua_dir: lua }":          "dpi.lua_dir",
+		"dpi: { enabled: true, links: [nope] }":         "dpi.links",
+		"dpi: { enabled: true, allow_risks: [flags] }":  "dpi.allow_risks",
+		"dpi: { enabled: true, queue_base: 65535 }":     "dpi.queue_base",
+		"dpi: { enabled: true, probe_domains: [A.b] }":  "dpi.probe_domains",
+		"dpi: { enabled: true, recheck_interval: -1s }": "dpi.recheck_interval",
+	} {
+		if _, err := Parse([]byte(minimal + yaml + "\n")); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want %s", yaml, err, want)
+		}
+	}
+}

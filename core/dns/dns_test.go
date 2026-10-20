@@ -247,7 +247,7 @@ func TestDecide(t *testing.T) {
 	}
 	got := Decide("www.youtube.com", 30*time.Second, ix, rules, classSet, 5*time.Minute, 12*time.Hour)
 	want := []string{"tross_dp_youtube_video_0", "tross_du0", "tross_la_streaming"}
-	if !slices.Equal(got.Sets, want) || !got.Bypass || got.Never || !got.Inside || got.Timeout != 5*time.Minute {
+	if !slices.Equal(got.Sets, want) || !got.Bypass || got.BypassKey != "youtube.com" || got.BypassLayer != model.LayerManual || got.Never || !got.Inside || got.Timeout != 5*time.Minute {
 		t.Errorf("got %+v", got)
 	}
 	never := []model.DomainRule{

@@ -359,13 +359,23 @@ lists:
       checksum: https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat.sha256sum
       disabled: true
 
-# Обход DPI (zapret) — этап 5, пока не используется.
+# Обход DPI (zapret2, движок nfqws2) — этап 5. Обход — только для доменов,
+# которым он нужен на канале (проверено). Движок собирается из исходников
+# официального репозитория zapret2 и ставится в /opt/zapret2 (nfqws2, lua/,
+# VERSION). Без демона обхода нет: сайты открываются как без Tross.
 dpi:
   enabled: false
-  nfqws: /opt/zapret/nfq/nfqws
+  nfqws: /opt/zapret2/nfqws2
+  lua_dir: /opt/zapret2/lua
+  version: v1.0.5.2                 # выпуск в /opt/zapret2/VERSION; иной — не запускаем
+  dir: /run/tross-dpi               # списки доменов движка (читаются без прав root)
   queue_base: 200                   # очередь канала = queue_base + номер канала
+  # links: [isp1, isp2]             # каналы с движком; пусто — все
   recheck_interval: 24h
   probe_domains: [rutracker.org, youtube.com]
+  # Рискованные стратегии (по умолчанию не подбираются): ts — ломает
+  # устройства без TCP timestamps (Windows), syn — приёмы рукопожатия.
+  # allow_risks: [ts]
 
 # Прокси-ядро (mihomo) — этап 6, пока не используется.
 proxy:

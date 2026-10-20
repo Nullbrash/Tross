@@ -25,12 +25,21 @@ const (
 	// TopicDNSDebug — отладочный журнал DNS включён или выключен: видно, если
 	// его включил не владелец.
 	TopicDNSDebug Topic = "dns.debug"
+	// TopicDPI — движок обхода DPI: запуск, падение, откат, отвергнутая
+	// стратегия (данные — DPIEvent).
+	TopicDPI Topic = "dpi"
 )
 
 // JournalTopics — темы, которые пишутся в журнал и историю событий:
 // всё, кроме частых служебных (раунды проб).
 func JournalTopics() []Topic {
-	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDNSWatchdog, TopicSQM, TopicDNSDebug}
+	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDNSWatchdog, TopicSQM, TopicDNSDebug, TopicDPI}
+}
+
+// DPIEvent — данные события TopicDPI; Link пуст — движок целиком.
+type DPIEvent struct {
+	Link model.LinkID `json:"link,omitempty"`
+	Msg  string       `json:"msg"`
 }
 
 // LinkRound — данные события TopicLinkRound.

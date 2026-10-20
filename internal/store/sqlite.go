@@ -14,6 +14,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	coredpi "tross/core/dpi"
 	"tross/core/event"
 	"tross/core/model"
 )
@@ -76,6 +77,11 @@ var migrations = []string{
 	// Отладочный журнал DNS: только во время отладочного прогона, хранится 48 ч.
 	`CREATE TABLE dns_debug (at INTEGER NOT NULL, device TEXT NOT NULL, name TEXT NOT NULL, qtype INTEGER, rcode INTEGER, cached INTEGER, link TEXT);
 	 CREATE INDEX dns_debug_at ON dns_debug (at);`,
+	// Обход DPI: решения по доменам на каналах и итоги стратегий каналов.
+	`CREATE TABLE dpi_verdicts (key TEXT NOT NULL, link TEXT NOT NULL, method TEXT NOT NULL, strategy TEXT, kind TEXT,
+	   checked_at INTEGER NOT NULL, used_at INTEGER, PRIMARY KEY (key, link)) WITHOUT ROWID;
+	 CREATE TABLE dpi_scores (link TEXT NOT NULL, strategy TEXT NOT NULL, opened INTEGER, failed INTEGER, last_ok INTEGER,
+	   PRIMARY KEY (link, strategy)) WITHOUT ROWID;`,
 }
 
 func (s *SQLite) migrate() error {
@@ -590,4 +596,122 @@ func (s *SQLite) PurgeDNSDebug(ctx context.Context, before time.Time) (int64, er
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+func (s *SQLite) SaveDPIVerdicts(ctx context.Context, vs []DPIVerdict) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, v := range vs {
+		var used any
+		if !v.UsedAt.IsZero() {
+			used = v.UsedAt.Unix()
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO dpi_verdicts (key, link, method, strategy, kind, checked_at, used_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			v.Key, string(v.Link), string(v.Method), v.Strategy, string(v.Kind), v.CheckedAt.Unix(), used); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) TouchDPIVerdicts(ctx context.Context, keys []string, at time.Time) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, k := range keys {
+		if _, err := tx.ExecContext(ctx, `UPDATE dpi_verdicts SET used_at = ? WHERE key = ?`, at.Unix(), k); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) DPIVerdicts(ctx context.Context) ([]DPIVerdict, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT key, link, method, strategy, kind, checked_at, used_at FROM dpi_verdicts ORDER BY key, link`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DPIVerdict
+	for rows.Next() {
+		var v DPIVerdict
+		var link, method, kind string
+		var strategy sql.NullString
+		var checked int64
+		var used sql.NullInt64
+		if err := rows.Scan(&v.Key, &link, &method, &strategy, &kind, &checked, &used); err != nil {
+			return nil, err
+		}
+		v.Link, v.Method, v.Strategy, v.Kind = model.LinkID(link), coredpi.Method(method), strategy.String, coredpi.BlockKind(kind)
+		v.CheckedAt = time.Unix(checked, 0)
+		if used.Valid {
+			v.UsedAt = time.Unix(used.Int64, 0)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) SaveDPIScores(ctx context.Context, link model.LinkID, scores []coredpi.Score) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM dpi_scores WHERE link = ?`, string(link)); err != nil {
+		return err
+	}
+	for _, sc := range scores {
+		var last any
+		if !sc.LastOK.IsZero() {
+			last = sc.LastOK.Unix()
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO dpi_scores (link, strategy, opened, failed, last_ok) VALUES (?, ?, ?, ?, ?)`,
+			string(link), sc.Strategy, sc.Opened, sc.Failed, last); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *SQLite) DPIScores(ctx context.Context) (map[model.LinkID][]coredpi.Score, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT link, strategy, opened, failed, last_ok FROM dpi_scores ORDER BY link, strategy`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[model.LinkID][]coredpi.Score{}
+	for rows.Next() {
+		var link string
+		var sc coredpi.Score
+		var last sql.NullInt64
+		if err := rows.Scan(&link, &sc.Strategy, &sc.Opened, &sc.Failed, &last); err != nil {
+			return nil, err
+		}
+		if last.Valid {
+			sc.LastOK = time.Unix(last.Int64, 0)
+		}
+		out[model.LinkID(link)] = append(out[model.LinkID(link)], sc)
+	}
+	return out, rows.Err()
 }
