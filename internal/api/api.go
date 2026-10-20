@@ -6,11 +6,15 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
+	"sync"
 	"time"
 
+	"tross/core/event"
 	"tross/core/model"
+	"tross/internal/auth"
 	"tross/internal/dataplane"
 	"tross/internal/linkmon"
 	"tross/internal/logring"
@@ -46,18 +50,43 @@ type Options struct {
 	AllowedNetworks []netip.Prefix
 	Version         string
 	DryRun          bool
+	// Auth — вход; nil — защищённые маршруты недоступны (503), кроме NoAuth.
+	Auth *auth.Service
+	// NoAuth — без входа: только тесты пакета.
+	NoAuth bool
+	// CAPEM — корневой сертификат для /ca.crt; nil — нет.
+	CAPEM func() []byte
+	// Passkeys — ключи доступа; nil — нет.
+	Passkeys Passkeys
+	// Events — подписка на события для потока интерфейса; nil — без событий.
+	Events func() (<-chan event.Event, func())
+	// Settings — правки интерфейса поверх файла; nil — нет.
+	Settings Settings
 }
 
 type Server struct {
 	opts    Options
 	started time.Time
+
+	mu       sync.Mutex
+	rejected map[string]time.Time
 }
 
-func New(opts Options) *Server { return &Server{opts: opts, started: time.Now()} }
+func New(opts Options) *Server {
+	return &Server{opts: opts, started: time.Now(), rejected: map[string]time.Time{}}
+}
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/auth/state", s.handleAuthState)
+	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /ca.crt", s.handleCA)
+	mux.HandleFunc("GET /api/ws", s.handleWS)
+	mux.HandleFunc("GET /api/settings", s.handleSettings)
+	mux.HandleFunc("PUT /api/settings", s.handleSettingsPut)
+	s.passkeyRoutes(mux)
 	mux.HandleFunc("GET /api/links", s.handleLinks)
 	mux.HandleFunc("POST /api/links/{id}/speedtest", s.handleSpeedTest)
 	mux.HandleFunc("GET /api/links/{id}/stats", s.handleLinkStats)
@@ -87,21 +116,45 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	})
 	mux.Handle("GET /", http.FileServerFS(web.Dist()))
-	return s.allowOnly(mux)
+	return s.allowOnly(securityHeaders(s.requireAuth(mux)))
 }
 
 // allowOnly пропускает запросы только из разрешённых сетей (LAN и loopback):
 // интерфейс управляет сетью всего дома и не должен быть виден снаружи.
+// Чужому — ни ответа, ни кода ошибки: соединение просто обрывается (снаружи
+// до сюда не доходит и первый пакет — его отбрасывает ядро; это запасная
+// линия).
 func (s *Server) allowOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ap, err := netip.ParseAddrPort(r.RemoteAddr)
 		if err != nil || !s.allowed(ap.Addr().Unmap()) {
-			s.opts.Log.Warn("api: rejected client", "remote", r.RemoteAddr)
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
-			return
+			s.noteRejected(r.RemoteAddr)
+			panic(http.ErrAbortHandler)
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// noteRejected — в журнал не чаще раза в минуту на адрес: поток чужих
+// запросов не забивает журнал.
+func (s *Server) noteRejected(remote string) {
+	host := remote
+	if ap, err := netip.ParseAddrPort(remote); err == nil {
+		host = ap.Addr().String()
+	}
+	now := time.Now()
+	s.mu.Lock()
+	t, seen := s.rejected[host]
+	if !seen || now.Sub(t) >= time.Minute {
+		if len(s.rejected) > 1024 {
+			clear(s.rejected)
+		}
+		s.rejected[host] = now
+	}
+	s.mu.Unlock()
+	if !seen || now.Sub(t) >= time.Minute {
+		s.opts.Log.Warn("api: request from outside the allowed networks dropped", "remote", host)
+	}
 }
 
 func (s *Server) allowed(a netip.Addr) bool {
@@ -115,18 +168,35 @@ func (s *Server) allowed(a netip.Addr) bool {
 
 type healthResponse struct {
 	Status        string `json:"status"`
-	Version       string `json:"version"`
-	DryRun        bool   `json:"dry_run"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
+	Version       string `json:"version,omitempty"`
+	DryRun        bool   `json:"dry_run,omitempty"`
+	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+// handleHealth — без входа только «работает»: версия — подсказка для атаки.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if !s.loggedIn(r) {
+		writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
+		return
+	}
 	writeJSON(w, http.StatusOK, healthResponse{
 		Status:        "ok",
 		Version:       s.opts.Version,
 		DryRun:        s.opts.DryRun,
 		UptimeSeconds: int64(time.Since(s.started).Seconds()),
 	})
+}
+
+func (s *Server) loggedIn(r *http.Request) bool {
+	if s.opts.NoAuth {
+		return true
+	}
+	c, _ := r.Cookie(sessionCookie)
+	if c == nil || s.opts.Auth == nil {
+		return false
+	}
+	_, err := s.opts.Auth.Check(r.Context(), c.Value, clientAddr(r))
+	return err == nil
 }
 
 // linkDTO — плоское представление канала для интерфейса (длительности в мс).
@@ -213,4 +283,29 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// Listener — приём соединений только из разрешённых сетей: чужое
+// закрывается сразу, ещё до TLS (в рукопожатии было бы видно сертификат
+// Tross).
+func (s *Server) Listener(l net.Listener) net.Listener { return allowListener{Listener: l, s: s} }
+
+type allowListener struct {
+	net.Listener
+	s *Server
+}
+
+func (l allowListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		ap, err := netip.ParseAddrPort(c.RemoteAddr().String())
+		if err == nil && l.s.allowed(ap.Addr().Unmap()) {
+			return c, nil
+		}
+		l.s.noteRejected(c.RemoteAddr().String())
+		c.Close()
+	}
 }

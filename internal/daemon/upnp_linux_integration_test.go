@@ -6,8 +6,6 @@
 package daemon
 
 import (
-	"bytes"
-	"net/http"
 	"os/exec"
 	"strings"
 	"testing"
@@ -28,8 +26,7 @@ func upnpc(t *testing.T, args string) string {
 
 func patchDevice(t *testing.T, url, body string) {
 	t.Helper()
-	req, _ := http.NewRequest("PATCH", url, bytes.NewBufferString(body))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := itest.do("PATCH", apiPath(url), []byte(body))
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("patch %s: %v %v", body, resp, err)
 	}
@@ -110,7 +107,7 @@ func TestUPnPOnStand(t *testing.T) {
 	if len(st.Pending) != 1 || st.Pending[0].Desc != "Game" {
 		t.Fatalf("pending %+v", st.Pending)
 	}
-	resp, err := http.Post("http://"+cfg.API.Listen+"/api/upnp/pending/"+st.Pending[0].ID, "application/json", bytes.NewBufferString(`{"decision":"once"}`))
+	resp, err := itest.do("POST", "/api/upnp/pending/"+st.Pending[0].ID, []byte(`{"decision":"once"}`))
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("resolve: %v %v", resp, err)
 	}

@@ -23,6 +23,11 @@
 #   SOAK_LIFE=1       «жизнь дома»: 4 устройства каждые 2 с открывают новые
 #                     соединения разных классов (labsrv life) → life.jsonl:
 #                     куда ушло каждое (по адресу у сервера и по conntrack)
+#   SOAK_HOME=1       «живой дом»: раздача адресов (dnsmasq), реестр,
+#                     UPnP; устройства приходят по DHCP и уходят, иногда меняют
+#                     MAC; пробросы NAT-PMP/UPnP открываются, продлеваются,
+#                     истекают; две «вкладки» интерфейса держат поток событий,
+#                     «браузер» опрашивает API → home.txt, ws.txt
 #   sudo systemctl stop tross-soak       # досрочно (стенд снимется)
 #
 # Результаты: ~/lab-results/<дата>-soak/ — metrics.jsonl (каждые 5 мин),
@@ -50,7 +55,9 @@ out=$HOME/lab-results/$(date +%F)-soak
 lab=$PWD/scripts/lab-netns
 bin=$PWD/bin
 srv=http://203.0.113.10
-api=http://192.168.77.1:8080
+api=https://192.168.77.1:8080
+# Вход в API: свой пароль на прогон (trossd passwd), сессия — в cookie.
+pw="soak-$(date +%s)-$RANDOM"
 [ -x "$bin/trossd" ] && [ -x "$bin/labsrv" ] && [ -x "$bin/labmeasure" ] || { echo "build first: scripts/lab-sync build"; exit 1; }
 
 # Сегменты «дня»: имя, минуты, нагрузка labsrv load (пусто — без нагрузки).
@@ -66,6 +73,19 @@ S() { sudo -n "$@"; }
 client() { S ip netns exec tl-client "$@"; }
 tross() { S ip netns exec tl-tross "$@"; }
 snap() { S sh -c '{ ip -4 route show table all; ip rule; ip -br link; nft list ruleset; } | md5sum'; }
+# login — новая сессия (токен CSRF — в $out/csrf); apiget/apisend — с ней.
+login() {
+	tross wget --no-check-certificate --save-cookies "$out/cookies" --keep-session-cookies \
+		--header='Content-Type: application/json' --post-data="{\"password\":\"$pw\"}" \
+		-qO- "$api/api/auth/login" 2>/dev/null | sed -n 's/.*"csrf":"\([^"]*\)".*/\1/p' >"$out/csrf.tmp" &&
+		[ -s "$out/csrf.tmp" ] && mv "$out/csrf.tmp" "$out/csrf"
+}
+apiget() { tross wget --no-check-certificate --load-cookies "$out/cookies" -qO- "$api/api/$1" 2>/dev/null; }
+apisend() {
+	tross wget --no-check-certificate --load-cookies "$out/cookies" --method="$1" \
+		--header="X-CSRF-Token: $(cat "$out/csrf" 2>/dev/null)" --header='Content-Type: application/json' \
+		--body-data="${3:-}" -qO- "$api/api/$2" 2>/dev/null
+}
 now() { date +%s; }
 log() { echo "$(date +%T) $*" | tee -a "$out/segments.txt"; }
 
@@ -76,6 +96,8 @@ cleanup() {
 	S pkill -INT -x trossd 2>/dev/null || true
 	S pkill -INT -x labmeasure 2>/dev/null || true
 	S pkill -INT -f '^[^ ]*/labsrv life' 2>/dev/null || true
+	S pkill -INT -f '^[^ ]*/labsrv wsclient' 2>/dev/null || true
+	[ -f /run/tross-dhcp-soak/dnsmasq.pid ] && S kill "$(cat /run/tross-dhcp-soak/dnsmasq.pid)" 2>/dev/null || true
 	sleep 2
 	S "$lab" down >/dev/null 2>&1 || true
 }
@@ -98,6 +120,18 @@ if [ "${SOAK_DNS:-}" = 1 ]; then
 	' "$cfg" >"$out/lab-dns.yaml"
 	cfg=$out/lab-dns.yaml
 fi
+if [ "${SOAK_HOME:-}" = 1 ]; then
+	S rm -rf /run/tross-dhcp-soak
+	awk '
+		/^lan:/ { inlan = 1 }
+		inlan && /^  networks:/ { print; print "  dhcp: { enabled: true, range: 192.168.77.100-192.168.77.250, lease: 10m, gateway: 192.168.77.1, dir: /run/tross-dhcp-soak, pid_file: /run/tross-dhcp-soak/dnsmasq.pid, unit: none }"; inlan = 0; next }
+		{ print }
+		END { print "upnp: { enabled: true }" }
+	' "$cfg" >"$out/lab-home.yaml"
+	cfg=$out/lab-home.yaml
+fi
+mkdir -p "$out/data"
+printf '%s\n' "$pw" | tross "$bin/trossd" passwd -config "$cfg" -data-dir "$out/data" >/dev/null
 # start_daemon [any] — запуск и ожидание: isp1 поднят; any — лишь бы API
 # ответил (при хаосе каналов isp1 может быть оборван как раз сейчас).
 start_daemon() {
@@ -105,7 +139,7 @@ start_daemon() {
 	[ "${1:-}" = any ] && want='"links"'
 	tross "$bin/trossd" -config "$cfg" -data-dir "$out/data" >>"$out/trossd.log" 2>&1 &
 	for _ in $(seq 1 300); do
-		tross wget -qO- "$api/api/links" 2>/dev/null | grep -q "$want" && return 0
+		{ [ -s "$out/csrf" ] || login; } && apiget links | grep -q "$want" && return 0
 		sleep 0.2
 	done
 	return 1
@@ -115,11 +149,13 @@ S "$bin/labmeasure" -out "$out/measure" -interval 10s -duration "$((deadline - $
 
 # Снимок метрик раз в 5 минут — фоном до конца прогона.
 (while [ "$(now)" -lt "$deadline" ]; do
-	m=$(tross wget -qO- "$api/api/metrics" 2>/dev/null || echo '{}')
+	m=$(apiget metrics || echo '{}')
 	ct=$(tross cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
 	db=$(S du -sb "$out/data" 2>/dev/null | cut -f1)
-	l=$(tross wget -qO- "$api/api/links" 2>/dev/null || echo '{}')
-	echo "{\"t\":\"$(date -Is)\",\"conntrack\":$ct,\"data_dir_bytes\":${db:-0},\"metrics\":$m,\"links\":$l}" >>"$out/metrics.jsonl"
+	l=$(apiget links || echo '{}')
+	nd=$({ apiget devices || true; } | { grep -o '"id":"dev-' || true; } | wc -l)
+	nm=$({ apiget upnp || true; } | { grep -o '"ext_port":' || true; } | wc -l)
+	echo "{\"t\":\"$(date -Is)\",\"conntrack\":$ct,\"data_dir_bytes\":${db:-0},\"devices\":$nd,\"upnp_mappings\":$nm,\"metrics\":$m,\"links\":$l}" >>"$out/metrics.jsonl"
 	sleep 300
 done) 9>&- &
 
@@ -209,6 +245,45 @@ if [ "${SOAK_LIFE:-}" = 1 ]; then
 		>>"$out/life.log" 2>&1 || true) 9>&- &
 fi
 
+if [ "${SOAK_HOME:-}" = 1 ]; then
+	# Раздача адресов — dnsmasq по конфигу демона (как служба tross-dhcp).
+	for _ in $(seq 1 50); do [ -f /run/tross-dhcp-soak/dnsmasq.conf ] && break; sleep 0.2; done
+	tross dnsmasq --conf-file=/run/tross-dhcp-soak/dnsmasq.conf || log "dnsmasq did not start"
+	home() { echo "$(date +%T) $*" >>"$out/home.txt"; }
+	# Клиент стенда — доверенный для UPnP.
+	client ping -c2 -W1 -i0.3 192.168.77.1 >/dev/null 2>&1 || true
+	id=dev-$(client cat /sys/class/net/eth0/address | tr -d ':')
+	for _ in $(seq 1 30); do apiget "devices/$id" | grep -q '"id"' && break; sleep 1; done
+	apisend PATCH "devices/$id" '{"upnp":"allow"}' >/dev/null || home "upnp allow failed"
+	# Две «вкладки» интерфейса — поток событий с переподключением.
+	tok=$(S awk '$6 == "tross_session" { print $7 }' "$out/cookies" | tail -1)
+	for _ in 1 2; do
+		(client "$bin/labsrv" wsclient -url wss://192.168.77.1:8080/api/ws -origin https://192.168.77.1:8080 \
+			-cookie "$tok" -duration "$((deadline - $(now)))s" -reconnect 10m >>"$out/ws.txt" 2>&1 || true) 9>&- &
+	done
+	# Погонщик: раз в 20–60 с — одно действие «дома».
+	(n=0; while [ "$(now)" -lt "$((deadline - 60))" ]; do
+		sleep $((20 + RANDOM % 41))
+		n=$((n + 1))
+		i=$((RANDOM % 40))
+		mac=$(printf 'a6:00:00:00:%02x:%02x' $((i / 256)) $((i % 256)))
+		case $((RANDOM % 10)) in
+		0 | 1 | 2) home "dhcp $mac: $(client "$bin/labsrv" dhcpc -mac "$mac" -hostname "home-$i" 2>&1)" ;;
+		3) # Телефон сменил случайный MAC: то же имя, новый адрес.
+			nm=$(printf 'da:%02x:%02x:%02x:%02x:%02x' $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256)))
+			home "mac change home-$i -> $nm: $(client "$bin/labsrv" dhcpc -mac "$nm" -hostname "home-$i" 2>&1)" ;;
+		4 | 5) port=$((46000 + RANDOM % 50))
+			home "natpmp udp $port: $(client "$bin/labsrv" upnpc -natpmp -gw 192.168.77.1 -proto udp -port "$port" -lease 300 2>&1)" ;;
+		6) port=$((45000 + RANDOM % 30))
+			home "igd tcp $port: $(client "$bin/labsrv" upnpc -igd -proto tcp -port "$port" -lease 0 -desc TorrentClient 2>&1)" ;;
+		7) port=$((45000 + RANDOM % 30))
+			home "igd delete tcp $port: $(client "$bin/labsrv" upnpc -igd -proto tcp -port "$port" -delete 2>&1)" ;;
+		8) for p in devices upnp dhcp links events; do apiget "$p" >/dev/null || home "api $p failed"; done ;;
+		9) login && home "login ok" || home "login failed" ;;
+		esac
+	done) 9>&- &
+fi
+
 log "soak start, until $(date -d @"$deadline" +%T)"
 while [ "$(now)" -lt "$deadline" ]; do
 	for seg in "${SEGMENTS[@]}"; do
@@ -239,8 +314,8 @@ done
 log "soak end"
 
 for p in metrics "system/stats?res=hour" "system/stats?res=minute&from=$(date -u -d '-6 days' +%FT%TZ)" \
-	"links/isp1/stats?res=hour" "events?limit=1000" "logs?level=warn"; do
-	tross wget -qO- "$api/api/$p" >"$out/api-$(echo "$p" | cut -d'&' -f1 | tr '/?=&' '____').json" 2>/dev/null || true
+	"links/isp1/stats?res=hour" "events?limit=1000" "logs?level=warn" devices upnp dhcp; do
+	apiget "$p" >"$out/api-$(echo "$p" | cut -d'&' -f1 | tr '/?=&' '____').json" || true
 done
 cleanup
 trap - EXIT

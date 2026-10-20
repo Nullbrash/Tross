@@ -44,6 +44,11 @@ type Options struct {
 	// Logs — кольцо свежих записей того же журнала (для API); может быть nil.
 	Logs    *logring.Ring
 	Version string
+	// ConfigPath — файл конфигурации: правки интерфейса ложатся поверх него;
+	// пусто — правок нет.
+	ConfigPath string
+	// Prepare — тесты: подготовить базу (пароль, сессия) до запуска служб.
+	Prepare func(ctx context.Context, st *store.SQLite) error
 }
 
 // Run работает до отмены ctx (сигнал) или фатальной ошибки модуля.
@@ -59,6 +64,12 @@ func Run(ctx context.Context, opts Options) error {
 		return err
 	}
 	defer st.Close()
+	if opts.Prepare != nil {
+		if err := opts.Prepare(ctx, st); err != nil {
+			return fmt.Errorf("prepare: %w", err)
+		}
+	}
+	cfg, applied, overlayErr := loadOverlay(ctx, cfg, opts.ConfigPath, st, log)
 	logs := opts.Logs
 	if logs == nil {
 		logs = logring.New(cfg.Log.RingSize)
@@ -173,26 +184,46 @@ func Run(ctx context.Context, opts Options) error {
 		dnsStatus = func(ctx context.Context) api.DNSStatus { return dnsSvc.dnsStatus(ctx, dbg) }
 	}
 
+	ca, err := webTLS(cfg, log)
+	if err != nil {
+		return fmt.Errorf("api certificate: %w", err)
+	}
+	authSvc, passkeys := webAuth(cfg, st, log)
+	var settings api.Settings
+	if opts.ConfigPath != "" {
+		settings = &settingsAPI{path: opts.ConfigPath, st: st, applied: applied, err: overlayErr}
+	}
+	var pk api.Passkeys
+	if passkeys != nil {
+		pk = passkeys
+	}
+	apiSrv := api.New(api.Options{
+		Log:             log,
+		Monitor:         mon,
+		Store:           st,
+		Logs:            logs,
+		System:          coll.Last,
+		EventDrops:      bus.Dropped,
+		Connections:     dp.Connections,
+		Explain:         expl.explain,
+		SQM:             sqmc.status,
+		DNS:             dnsStatus,
+		Lists:           listsAPI,
+		Devices:         &devicesAPI{svc: devSvc, binder: binder, def: cfg.Devices.DefaultDNSMode},
+		DHCP:            dhcpSvc.statusFunc(),
+		UPnP:            &upnpAPI{u: upnpSvc, reg: devSvc.Registry()},
+		AllowedNetworks: cfg.API.AllowedNetworks,
+		Version:         opts.Version,
+		DryRun:          cfg.Daemon.DryRun,
+		Auth:            authSvc,
+		Passkeys:        pk,
+		CAPEM:           ca.CAPEM,
+		Settings:        settings,
+		Events:          func() (<-chan event.Event, func()) { return bus.Subscribe(64, event.JournalTopics()...) },
+	})
 	srv := &http.Server{
-		Handler: api.New(api.Options{
-			Log:             log,
-			Monitor:         mon,
-			Store:           st,
-			Logs:            logs,
-			System:          coll.Last,
-			EventDrops:      bus.Dropped,
-			Connections:     dp.Connections,
-			Explain:         expl.explain,
-			SQM:             sqmc.status,
-			DNS:             dnsStatus,
-			Lists:           listsAPI,
-			Devices:         &devicesAPI{svc: devSvc, binder: binder, def: cfg.Devices.DefaultDNSMode},
-			DHCP:            dhcpSvc.statusFunc(),
-			UPnP:            &upnpAPI{u: upnpSvc, reg: devSvc.Registry()},
-			AllowedNetworks: cfg.API.AllowedNetworks,
-			Version:         opts.Version,
-			DryRun:          cfg.Daemon.DryRun,
-		}).Handler(),
+		Handler:           apiSrv.Handler(),
+		TLSConfig:         ca.TLSConfig(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
@@ -256,10 +287,17 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	})
 	wg.Go(func() {
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.ServeTLS(apiSrv.Listener(ln), "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fatal <- fmt.Errorf("api: %w", err)
 		}
 	})
+	if cfg.API.HTTPListen != "" {
+		wg.Go(func() {
+			if err := serveHTTP(runCtx, cfg, apiSrv, log); err != nil {
+				log.Error("api: http (redirect and certificate) stopped", "err", err)
+			}
+		})
+	}
 	log.Info("api listening", "addr", ln.Addr().String())
 	bus.Publish(event.Event{Topic: event.TopicDaemon, Data: "started"})
 	// «Готов» — после установки правил и открытия API: systemd считает

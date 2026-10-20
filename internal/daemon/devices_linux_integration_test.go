@@ -24,7 +24,7 @@ import (
 // apiDevice — запись из API; false — 404.
 func apiDevice(t *testing.T, cfg *config.Config, id string) (api.DeviceDetail, bool) {
 	t.Helper()
-	resp, err := http.Get("http://" + cfg.API.Listen + "/api/devices/" + id)
+	resp, err := itest.do("GET", "/api/devices/"+id, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

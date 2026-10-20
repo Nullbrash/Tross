@@ -6,8 +6,6 @@
 package daemon
 
 import (
-	"bytes"
-	"net/http"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -81,7 +79,7 @@ func TestDHCPOnStand(t *testing.T) {
 		dev, ok := apiDevice(t, cfg, "dev-da0000000052")
 		return ok && dev.MaybeSame != nil && dev.MaybeSame.ID == "dev-a60000000051"
 	})
-	resp, err := http.Post("http://"+cfg.API.Listen+"/api/devices/dev-a60000000051/merge", "application/json", bytes.NewBufferString(`{"from":"dev-da0000000052"}`))
+	resp, err := itest.do("POST", "/api/devices/dev-a60000000051/merge", []byte(`{"from":"dev-da0000000052"}`))
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("merge: %v %v", resp, err)
 	}

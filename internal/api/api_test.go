@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -40,7 +41,7 @@ func newTestServer(t *testing.T) http.Handler {
 	log := slog.New(logs.Wrap(slog.NewTextHandler(io.Discard, nil)))
 	log.Info("hello", "k", "v")
 	log.Warn("careful")
-	return New(Options{
+	return New(Options{NoAuth: true,
 		Log:             log,
 		Monitor:         mon,
 		Store:           st,
@@ -90,11 +91,21 @@ func TestLinks(t *testing.T) {
 	}
 }
 
+// aborted — обработчик оборвал соединение без ответа (http.ErrAbortHandler).
+func aborted(h http.Handler, path, remote string) (ok bool) {
+	defer func() {
+		ok = recover() == http.ErrAbortHandler
+	}()
+	do(h, http.MethodGet, path, remote)
+	return false
+}
+
 func TestRejectsOutsideNetworks(t *testing.T) {
 	h := newTestServer(t)
+	// Чужому — ни ответа, ни кода ошибки: соединение обрывается.
 	for _, remote := range []string{"203.0.113.7:1234", "[2001:db8::1]:1234", "garbage"} {
-		if rec := do(h, http.MethodGet, "/api/health", remote); rec.Code != http.StatusForbidden {
-			t.Errorf("%s: status = %d, want 403", remote, rec.Code)
+		if !aborted(h, "/api/health", remote) {
+			t.Errorf("%s: answered, want a dropped connection", remote)
 		}
 	}
 	// IPv4-mapped IPv6 из разрешённой сети — это тот же клиент.
@@ -189,7 +200,7 @@ func TestStatsAndMetrics(t *testing.T) {
 }
 
 func TestEmptyLogsIsList(t *testing.T) {
-	h := New(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Logs: logring.New(5),
+	h := New(Options{NoAuth: true, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Logs: logring.New(5),
 		AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}).Handler()
 	if rec := do(h, http.MethodGet, "/api/logs", "127.0.0.1:1"); !strings.Contains(rec.Body.String(), `"logs":[]`) {
 		t.Fatalf("empty logs: %s", rec.Body.String())
@@ -200,5 +211,33 @@ func TestSystemSampleJSON(t *testing.T) {
 	b, _ := json.Marshal(store.SystemSample{CPUBusy: 1})
 	if !strings.Contains(string(b), `"cpu_busy":1`) {
 		t.Fatalf("system sample json: %s", b)
+	}
+}
+
+// Чужое соединение закрывается при приёме — до TLS, без единого байта.
+func TestListenerDropsOutsiders(t *testing.T) {
+	s := New(Options{NoAuth: true, Log: quietLog(), AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("10.255.255.0/24")}})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := s.Listener(ln)
+	defer l.Close()
+	go func() {
+		c, err := l.Accept()
+		if err == nil {
+			c.Close()
+			t.Error("outsider accepted")
+		}
+	}()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := c.Read(make([]byte, 16))
+	if n != 0 || err == nil {
+		t.Errorf("outsider read %d bytes, err %v", n, err)
 	}
 }

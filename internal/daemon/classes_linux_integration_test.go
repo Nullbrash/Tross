@@ -6,7 +6,6 @@ package daemon
 
 import (
 	"bytes"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -379,7 +378,7 @@ func TestSQMLearnsLinkSpeed(t *testing.T) {
 	_ = load.Process.Kill()
 	_ = load.Wait()
 
-	resp, err := http.Post("http://"+cfg.API.Listen+"/api/links/isp1/speedtest", "", nil)
+	resp, err := itest.do("POST", "/api/links/isp1/speedtest", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

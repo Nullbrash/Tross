@@ -62,6 +62,7 @@ func startDaemon(t *testing.T, cfg *config.Config) func() {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	logs := &syncBuffer{}
+	itest = newAPISession(cfg.API.Listen)
 	t.Cleanup(func() {
 		if t.Failed() {
 			out := logs.String()
@@ -72,7 +73,7 @@ func startDaemon(t *testing.T, cfg *config.Config) func() {
 		}
 	})
 	go func() {
-		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(logs, nil)), Version: "itest"})
+		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(logs, nil)), Version: "itest", Prepare: itest.prepare})
 	}()
 	stopped := false
 	stop := func() {
@@ -92,7 +93,7 @@ func startDaemon(t *testing.T, cfg *config.Config) func() {
 	}
 	t.Cleanup(stop)
 	until(t, 15*time.Second, "all links up", func() bool {
-		out, err := exec.Command("wget", "-q", "-T", "2", "-O", "-", "http://"+cfg.API.Listen+"/api/links").Output()
+		out, err := apiBytes("GET", "/api/links", nil)
 		return err == nil && strings.Count(string(out), `"state":"up"`) == 3
 	})
 	return stop

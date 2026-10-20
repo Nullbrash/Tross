@@ -69,7 +69,7 @@ func (f *fakeDevices) Forget(_ context.Context, id string) error {
 }
 
 func devicesServer(f *fakeDevices) http.Handler {
-	return New(Options{
+	return New(Options{NoAuth: true,
 		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Devices:         f,
 		AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
@@ -120,7 +120,7 @@ func TestDevicesAPI(t *testing.T) {
 		t.Errorf("merge direction %v", f.merged)
 	}
 	// Без реестра — 503, а не падение.
-	none := New(Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil)), AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}).Handler()
+	none := New(Options{NoAuth: true, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}}).Handler()
 	if rec := call(none, "GET", "/api/devices", ""); rec.Code != 503 {
 		t.Errorf("no registry: %d", rec.Code)
 	}

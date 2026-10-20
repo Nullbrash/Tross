@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -46,19 +45,15 @@ func TestRunServesAndStops(t *testing.T) {
 	cfg.Daemon.DataDir = t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	a := newAPISession("127.0.0.1:" + port)
 	go func() {
-		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Version: "test"})
+		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Version: "test", Prepare: a.prepare})
 	}()
 
-	url := "http://127.0.0.1:" + port + "/api/links"
 	var links struct{ Links []struct{ ID, State string } }
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		resp, err := http.Get(url)
-		if err == nil {
-			err = json.NewDecoder(resp.Body).Decode(&links)
-			resp.Body.Close()
-		}
+		err := a.getJSON("/api/links", &links)
 		if err == nil && len(links.Links) == 2 && links.Links[0].State == "up" {
 			break
 		}
@@ -69,14 +64,9 @@ func TestRunServesAndStops(t *testing.T) {
 	}
 
 	// События идут в базу через шину асинхронно — ждём «started».
-	base := "http://127.0.0.1:" + port
 	for deadline := time.Now().Add(3 * time.Second); ; {
 		var body struct{ Events []struct{ Topic string } }
-		resp, err := http.Get(base + "/api/events")
-		if err == nil {
-			err = json.NewDecoder(resp.Body).Decode(&body)
-			resp.Body.Close()
-		}
+		err := a.getJSON("/api/events", &body)
 		if err == nil && slices.ContainsFunc(body.Events, func(e struct{ Topic string }) bool { return e.Topic == "daemon" }) {
 			break
 		}
@@ -85,17 +75,20 @@ func TestRunServesAndStops(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	resp, err := http.Get(base + "/api/metrics")
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("metrics: %v %v", resp, err)
-	}
 	var m struct {
 		DBSize int64 `json:"db_size_bytes"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&m)
-	resp.Body.Close()
+	if err := a.getJSON("/api/metrics", &m); err != nil {
+		t.Fatalf("metrics: %v", err)
+	}
 	if m.DBSize == 0 {
 		t.Fatal("database file must exist in the data dir")
+	}
+	// Без входа — 401: API закрыт.
+	if resp, err := newAPISession("127.0.0.1:"+port).do(http.MethodGet, "/api/links", nil); err != nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("without login: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
 	}
 
 	cancel()
@@ -107,9 +100,10 @@ func TestRunServesAndStops(t *testing.T) {
 	case <-time.After(shutdownTimeout + time.Second):
 		t.Fatal("daemon did not stop after cancel")
 	}
-	if _, err := http.Get(url); err == nil {
+	if _, err := a.do(http.MethodGet, "/api/links", nil); err == nil {
 		t.Fatal("api still serving after shutdown")
 	}
+
 }
 
 func TestRunFailsOnBusyPort(t *testing.T) {
@@ -142,18 +136,15 @@ func TestDryRunWithoutDataDirKeepsStoreInMemory(t *testing.T) {
 	cfg.SetDataDir("")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	a := newAPISession("127.0.0.1:" + port)
 	go func() {
-		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Prepare: a.prepare})
 	}()
 	var m struct {
 		DBSize *int64 `json:"db_size_bytes"`
 	}
 	for deadline := time.Now().Add(3 * time.Second); ; {
-		resp, err := http.Get("http://127.0.0.1:" + port + "/api/metrics")
-		if err == nil {
-			err = json.NewDecoder(resp.Body).Decode(&m)
-			resp.Body.Close()
-		}
+		err := a.getJSON("/api/metrics", &m)
 		if err == nil && m.DBSize != nil {
 			break
 		}

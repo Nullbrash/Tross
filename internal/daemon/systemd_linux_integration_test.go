@@ -100,6 +100,14 @@ WatchdogSec=6
 		t.Fatal(err)
 	}
 	systemctl(t, "daemon-reload")
+	// Вход в API службы — пароль и сессия в её базе до запуска.
+	if err := os.MkdirAll("/var/lib/tross-itest", 0o750); err != nil {
+		t.Fatal(err)
+	}
+	itest = newAPISession("192.168.77.1:8080")
+	if err := itest.seedFile("/var/lib/tross-itest"); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		_ = exec.Command("systemctl", "stop", itestUnit).Run()
 		_ = exec.Command("systemctl", "reset-failed", itestUnit).Run()
@@ -120,7 +128,7 @@ func startUnit(t *testing.T) {
 	systemctl(t, "start", itestUnit)
 	t.Logf("measure: systemctl start returned in %v", time.Since(began).Round(100*time.Millisecond))
 	until(t, 15*time.Second, "all links up", func() bool {
-		out, err := exec.Command("wget", "-q", "-T", "2", "-O", "-", "http://192.168.77.1:8080/api/links").Output()
+		out, err := apiBytes("GET", "/api/links", nil)
 		return err == nil && strings.Count(string(out), `"state":"up"`) == 3
 	})
 	// Песочница службы не мешает источникам реестра (сырой сокет DHCP —

@@ -238,8 +238,8 @@ func (g *IGD) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ap, err := netip.ParseAddrPort(r.RemoteAddr)
 		if err != nil || !g.inLAN(ap.Addr().Unmap()) {
-			w.WriteHeader(http.StatusForbidden)
-			return
+			// Чужому — без ответа (и до сюда он не дойдёт: закрыт при приёме).
+			panic(http.ErrAbortHandler)
 		}
 		mux.ServeHTTP(w, r)
 	})
@@ -427,8 +427,27 @@ func (g *IGD) ServeHTTP(ctx context.Context) error {
 		defer cancel()
 		_ = srv.Shutdown(sctx)
 	}()
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.Serve(lanListener{ln, g.inLAN}); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// lanListener — соединения не из LAN закрываются сразу при приёме.
+type lanListener struct {
+	net.Listener
+	inLAN func(netip.Addr) bool
+}
+
+func (l lanListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		if ap, err := netip.ParseAddrPort(c.RemoteAddr().String()); err == nil && l.inLAN(ap.Addr().Unmap()) {
+			return c, nil
+		}
+		c.Close()
+	}
 }

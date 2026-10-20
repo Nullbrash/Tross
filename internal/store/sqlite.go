@@ -88,6 +88,12 @@ var migrations = []string{
 	   PRIMARY KEY (mac, ip)) WITHOUT ROWID;
 	 CREATE INDEX device_addrs_device ON device_addrs (device);
 	 CREATE INDEX device_addrs_last ON device_addrs (last);`,
+	// Вход в интерфейс (пароль, сессии, ключи доступа) и правки интерфейса.
+	`CREATE TABLE auth (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID;
+	 CREATE TABLE sessions (hash BLOB PRIMARY KEY, csrf TEXT NOT NULL, created INTEGER NOT NULL, last INTEGER NOT NULL,
+	   expires INTEGER NOT NULL, addr TEXT, agent TEXT) WITHOUT ROWID;
+	 CREATE TABLE passkeys (id BLOB PRIMARY KEY, name TEXT NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL, last INTEGER) WITHOUT ROWID;
+	 CREATE TABLE overlay (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, data BLOB NOT NULL, updated INTEGER NOT NULL);`,
 }
 
 func (s *SQLite) migrate() error {

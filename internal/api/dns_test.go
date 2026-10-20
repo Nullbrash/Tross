@@ -32,7 +32,7 @@ func (f *fakeLists) AddManual(_ context.Context, r ManualRule) error {
 func (f *fakeLists) DeleteManual(context.Context, string, model.MatchKind) error { return ErrNotFound }
 
 func dnsServer(dns func(context.Context) DNSStatus, l Lists) http.Handler {
-	return New(Options{
+	return New(Options{NoAuth: true,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DNS: dns, Lists: l,
 		AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
 	}).Handler()

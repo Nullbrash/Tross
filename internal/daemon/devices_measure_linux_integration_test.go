@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -142,7 +141,7 @@ func TestMeasureDevices(t *testing.T) {
 
 func apiDevices(t *testing.T, cfg *config.Config) []map[string]any {
 	t.Helper()
-	resp, err := http.Get("http://" + cfg.API.Listen + "/api/devices")
+	resp, err := itest.do("GET", "/api/devices", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

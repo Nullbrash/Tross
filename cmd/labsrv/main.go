@@ -20,6 +20,7 @@
 //	    ответ на запрос mDNS «имя по адресу»
 //	labsrv dhcpc -mac MAC -hostname NAME   клиент DHCP с любым MAC (печатает адрес и сервер)
 //	labsrv upnpc -igd|-natpmp|-pcp [-gw IP] -proto tcp -port N -lease S   программа просит проброс
+//	labsrv wsclient -url wss://… -origin https://… -cookie TOKEN -duration 8h   «открытая вкладка интерфейса»
 //
 // UDP-пинг имитирует игровой трафик: мелкие пакеты с постоянной частотой;
 // печатает RTT (мин/сред/макс), джиттер и потери.
@@ -49,7 +50,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: labsrv serve|udpping|upload|load|life|dns|dnsload|tlsget|announce|mdnsd|dhcpc|upnpc [flags]")
+		fmt.Fprintln(os.Stderr, "usage: labsrv serve|udpping|upload|load|life|dns|dnsload|tlsget|announce|mdnsd|dhcpc|upnpc|wsclient [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -78,6 +79,8 @@ func main() {
 		err = dhcpc(os.Args[2:])
 	case "upnpc":
 		err = upnpc(os.Args[2:])
+	case "wsclient":
+		err = wsclient(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}

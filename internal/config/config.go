@@ -56,7 +56,18 @@ type Log struct {
 }
 
 type API struct {
+	// Listen — интерфейс и API по HTTPS.
 	Listen string `yaml:"listen"`
+	// HTTPListen — HTTP только для перенаправления на HTTPS и выдачи
+	// корневого сертификата; пусто — не слушать.
+	HTTPListen string `yaml:"http_listen"`
+	// Name — имя интерфейса в домашней сети (в сертификате; резолвер Tross
+	// отвечает на него адресом мини-ПК); ключи доступа работают только по
+	// имени, не по адресу.
+	Name string `yaml:"name"`
+	// TLSDir — корневой сертификат и сертификат интерфейса; пусто —
+	// <data_dir>/tls.
+	TLSDir string `yaml:"tls_dir"`
 	// AllowedNetworks — откуда разрешён доступ; по умолчанию сети LAN и loopback.
 	AllowedNetworks []netip.Prefix `yaml:"allowed_networks"`
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -77,6 +78,9 @@ func (r *Resolver) serveUDP(ctx context.Context, pc net.PacketConn, sem chan str
 			continue
 		}
 		client := ua.AddrPort().Addr().Unmap()
+		if !r.fromHome(client) {
+			continue
+		}
 		q := append([]byte(nil), buf[:n]...)
 		select {
 		case sem <- struct{}{}:
@@ -102,8 +106,22 @@ func (r *Resolver) serveTCP(ctx context.Context, l net.Listener) {
 			}
 			continue
 		}
+		if ta, ok := c.RemoteAddr().(*net.TCPAddr); !ok || !r.fromHome(ta.AddrPort().Addr().Unmap()) {
+			c.Close()
+			continue
+		}
 		go r.serveConn(ctx, c)
 	}
+}
+
+// fromHome — запрос из дома (или с самого мини-ПК). Чужому — молчание: не
+// открытый резолвер и не признак машины (снаружи и так отбрасывает ядро —
+// это запасная линия). Без списка сетей дома — отвечать всем (тесты).
+func (r *Resolver) fromHome(a netip.Addr) bool {
+	if len(r.cfg.Home) == 0 || a.IsLoopback() {
+		return true
+	}
+	return slices.ContainsFunc(r.cfg.Home, func(p netip.Prefix) bool { return p.Contains(a) })
 }
 
 func (r *Resolver) serveConn(ctx context.Context, c net.Conn) {

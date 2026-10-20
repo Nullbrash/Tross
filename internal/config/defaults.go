@@ -52,6 +52,7 @@ func (c *Config) applyDefaults() {
 	orDefault(&c.Log.RingSize, 5000)
 
 	orDefault(&c.API.Listen, "127.0.0.1:8080")
+	orDefault(&c.API.Name, "tross.lan")
 	if len(c.API.AllowedNetworks) == 0 {
 		c.API.AllowedNetworks = append([]netip.Prefix{
 			netip.MustParsePrefix("127.0.0.0/8"),
@@ -175,6 +176,15 @@ func (c *Config) applyDefaults() {
 	orDefault(&d.SetTTL.Max, 12*time.Hour)
 	c.applyDHCPDefaults()
 	c.applyUPnPDefaults()
+	// Имя интерфейса — свои имена резолвера (если пользователь не задал).
+	if c.API.Name != "" && c.LAN.DHCP.Gateway.IsValid() && len(c.DNS.Listen) > 0 {
+		if _, ok := c.DNS.Hosts[c.API.Name]; !ok {
+			if c.DNS.Hosts == nil {
+				c.DNS.Hosts = map[string]netip.Addr{}
+			}
+			c.DNS.Hosts[c.API.Name] = c.LAN.DHCP.Gateway
+		}
+	}
 	if d.FirefoxCanaryNXDomain == nil {
 		d.FirefoxCanaryNXDomain = ptr(true)
 	}

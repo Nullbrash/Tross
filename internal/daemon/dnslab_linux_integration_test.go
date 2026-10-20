@@ -199,7 +199,10 @@ func TestListsFromCacheAfterRestart(t *testing.T) {
 	if n, _ := sourceDomains(); n != 1 {
 		t.Fatalf("after restart: %d domains, want the cached list", n)
 	}
-	out, _ := exec.Command("wget", "-q", "-T", "5", "-O", "-", "--post-data=", "http://"+cfg.API.Listen+"/api/lists/refresh?source=lab").CombinedOutput()
+	out, err := apiBytes("POST", "/api/lists/refresh?source=lab", nil)
+	if err != nil {
+		out = []byte(err.Error())
+	}
 	n, errText := sourceDomains()
 	t.Logf("refresh without the source: %s; state: %d domains, error %q", strings.TrimSpace(string(out)), n, errText)
 	if n != 1 || errText == "" {
@@ -285,7 +288,7 @@ type labConn struct {
 // connTo — соединение клиента к адресу и порту по снимку conntrack.
 func connTo(t *testing.T, cfg *config.Config, a netip.Addr, port uint16) labConn {
 	t.Helper()
-	out, err := exec.Command("wget", "-q", "-T", "2", "-O", "-", "http://"+cfg.API.Listen+"/api/connections?limit=5000&device="+benchClient).Output()
+	out, err := apiBytes("GET", "/api/connections?limit=5000&device="+benchClient, nil)
 	if err != nil {
 		t.Fatalf("/api/connections: %v", err)
 	}

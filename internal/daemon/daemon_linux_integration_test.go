@@ -4,10 +4,8 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -35,19 +33,15 @@ func TestRealModeOnBench(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	itest = newAPISession(cfg.API.Listen)
 	go func() {
-		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Version: "itest"})
+		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Version: "itest", Prepare: itest.prepare})
 	}()
 
-	url := "http://" + cfg.API.Listen + "/api/links"
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		var body struct{ Links []struct{ ID, State string } }
-		resp, err := http.Get(url)
-		if err == nil {
-			err = json.NewDecoder(resp.Body).Decode(&body)
-			resp.Body.Close()
-		}
+		err := itest.getJSON("/api/links", &body)
 		up := 0
 		for _, l := range body.Links {
 			if l.State == "up" {
@@ -109,16 +103,7 @@ func TestRealModeOnBench(t *testing.T) {
 
 func getJSON(t *testing.T, url string, v any) {
 	t.Helper()
-	resp, err := http.Get(url)
-	if err != nil {
+	if err := itest.getJSON(apiPath(url), v); err != nil {
 		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("%s: %s %s", url, resp.Status, body)
-	}
-	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
-		t.Fatalf("%s: %v", url, err)
 	}
 }

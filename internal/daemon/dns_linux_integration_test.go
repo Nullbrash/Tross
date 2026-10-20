@@ -128,7 +128,7 @@ func TestDNSHostsDebugAndAPI(t *testing.T) {
 	if rows[0].Name != "store.steampowered.com" || rows[0].Device != "device-1" {
 		t.Errorf("row %+v", rows[0])
 	}
-	out, err := exec.Command("wget", "-q", "-T", "2", "-O", "-", "http://"+cfg.API.Listen+"/api/dns").Output()
+	out, err := apiBytes("GET", "/api/dns", nil)
 	if err != nil || !strings.Contains(string(out), `"serving":"resolver"`) || !strings.Contains(string(out), `"active":true`) {
 		t.Errorf("/api/dns: %v %s", err, out)
 	}

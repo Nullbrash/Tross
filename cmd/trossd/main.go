@@ -22,8 +22,15 @@ var version = "dev"
 func main() { os.Exit(run()) }
 
 func run() int {
-	if len(os.Args) > 1 && os.Args[1] == "debug" {
-		return runDebug(os.Args[2:])
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "debug":
+			return runDebug(os.Args[2:])
+		case "passwd":
+			return runPasswd(os.Args[2:])
+		case "ca":
+			return runCA(os.Args[2:])
+		}
 	}
 	configPath := flag.String("config", "/etc/tross/config.yaml", "path to config file")
 	dryRun := flag.Bool("dry-run", false, "force dry-run mode: change nothing in the system")
@@ -68,7 +75,7 @@ func run() int {
 		return 0
 	}
 
-	if err := daemon.Run(ctx, daemon.Options{Config: cfg, Log: log, Logs: logs, Version: version}); err != nil {
+	if err := daemon.Run(ctx, daemon.Options{Config: cfg, Log: log, Logs: logs, Version: version, ConfigPath: *configPath}); err != nil {
 		log.Error("trossd failed", "err", err)
 		return 1
 	}

@@ -338,13 +338,16 @@ func TestIGD(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "InternetGatewayDevice:1") || !strings.Contains(w.Body.String(), "/ctl/WANIPCn") {
 		t.Fatalf("root desc %d %s", w.Code, w.Body)
 	}
-	// Не из LAN — запрещено.
+	// Не из LAN — обрыв без ответа.
 	r.RemoteAddr = "203.0.113.5:40000"
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Errorf("outside LAN: %d", w.Code)
-	}
+	func() {
+		defer func() {
+			if recover() != http.ErrAbortHandler {
+				t.Error("outside LAN: answered")
+			}
+		}()
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}()
 	if w := soap(h, "192.168.10.20", "AddPortMapping", addArgs("51413", "192.168.10.20", "0")); w.Code != 200 {
 		t.Fatalf("add: %d %s", w.Code, w.Body)
 	}

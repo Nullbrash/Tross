@@ -87,6 +87,14 @@ func ipv4HostPort(s string) error {
 }
 
 func (c *Config) validateAPI(p *problems) {
+	if c.API.HTTPListen != "" {
+		if err := ipv4HostPort(c.API.HTTPListen); err != nil {
+			p.add("api.http_listen", "%v", err)
+		}
+	}
+	if n, err := lists.NormalizeName(c.API.Name); err != nil || n != c.API.Name || !strings.Contains(n, ".") {
+		p.add("api.name", "%q: want a normalized name with a dot (tross.lan)", c.API.Name)
+	}
 	if err := ipv4HostPort(c.API.Listen); err != nil {
 		p.add("api.listen", "%v", err)
 	}

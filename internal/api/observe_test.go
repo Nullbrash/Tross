@@ -24,7 +24,7 @@ func observeServer(t *testing.T, got *model.Flow) http.Handler {
 		{Proto: "udp", Src: netip.MustParseAddrPort("192.168.1.20:50001"), Dst: netip.MustParseAddrPort("203.0.113.7:27015"), Link: "isp2", Class: model.ClassGaming, Tin: sqm.TinVoice, Timeout: time.Minute, Bytes: 5000},
 		{Proto: "tcp", Src: netip.MustParseAddrPort("192.168.1.21:50002"), Dst: netip.MustParseAddrPort("198.51.100.9:443"), Link: "isp1", Class: model.ClassStreaming, Bytes: 10},
 	}
-	return New(Options{
+	return New(Options{NoAuth: true,
 		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 		AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
 		Connections:     func(context.Context) ([]dataplane.Connection, error) { return conns, nil },
@@ -110,7 +110,7 @@ func TestObserveUnavailable(t *testing.T) {
 
 // Очереди каналов — в /api/links: только у каналов с SQM.
 func TestLinksShowSQM(t *testing.T) {
-	h := New(Options{
+	h := New(Options{NoAuth: true,
 		Log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Monitor:         linkmon.NewFake([]model.Link{{ID: "isp1", Kind: model.LinkKindWired}, {ID: "lte", Kind: model.LinkKindLTE}}, event.NewBus(), time.Second, 1),
 		AllowedNetworks: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
