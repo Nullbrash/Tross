@@ -22,6 +22,17 @@ type Fake struct {
 	shaping map[model.LinkID]Shaping
 	elems   []SetElement
 	binding DeviceBinding
+	upnp    map[upnpKey]fakeUPnP
+}
+
+type upnpKey struct {
+	proto model.Protocol
+	port  uint16
+}
+
+type fakeUPnP struct {
+	m     UPnPMapping
+	until time.Time
 }
 
 var _ Dataplane = (*Fake)(nil)
@@ -108,6 +119,45 @@ func (f *Fake) SetDevices(_ context.Context, b DeviceBinding) error {
 	f.mu.Unlock()
 	f.record("set-devices", len(b.Rules), len(b.DNS), len(b.Forwards))
 	return nil
+}
+
+func (f *Fake) SetUPnP(_ context.Context, m UPnPMapping) error {
+	if err := validMapping(m); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.upnp == nil {
+		f.upnp = map[upnpKey]fakeUPnP{}
+	}
+	m.Desc = nftComment(m.Desc)
+	f.upnp[upnpKey{m.Proto, m.ExtPort}] = fakeUPnP{m: m, until: time.Now().Add(m.Lease)}
+	return nil
+}
+
+func (f *Fake) DeleteUPnP(_ context.Context, proto model.Protocol, port uint16) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.upnp, upnpKey{proto, port})
+	return nil
+}
+
+// UPnPMappings — как в ядре: истёкшие исчезают сами.
+func (f *Fake) UPnPMappings(context.Context) ([]UPnPMapping, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []UPnPMapping
+	now := time.Now()
+	for k, e := range f.upnp {
+		if !now.Before(e.until) {
+			delete(f.upnp, k)
+			continue
+		}
+		m := e.m
+		m.Expires = e.until.Sub(now).Truncate(time.Second)
+		out = append(out, m)
+	}
+	return out, nil
 }
 
 // Binding — последняя привязка устройств (для тестов).

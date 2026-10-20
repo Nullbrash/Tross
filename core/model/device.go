@@ -134,6 +134,9 @@ type Device struct {
 	Hints         DeviceHints `json:"hints"`
 	DNSMode       DNSMode     `json:"dns_mode,omitempty"`
 	UPnP          UPnPLevel   `json:"upnp,omitempty"`
+	// UPnPPrograms — программы (по описанию из запроса), которым при
+	// уровне «спрашивать» разрешено «всегда»: любой порт ≥ 1024.
+	UPnPPrograms []string `json:"upnp_programs,omitempty"`
 	// Addr — последний известный IPv4 в LAN.
 	Addr netip.Addr `json:"addr,omitzero"`
 	// Aliases — id записей, влитых в эту: ссылки на них в конфиге остаются

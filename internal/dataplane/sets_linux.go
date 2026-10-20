@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"maps"
 	"net/netip"
+	"os/exec"
 	"slices"
 	"time"
 
 	"github.com/google/nftables"
+
+	"tross/core/model"
 )
 
 // AddToSets — через netlink одной транзакцией: запуск nft стоит ~28 мс на
@@ -86,6 +89,43 @@ func (s *System) SetDNS(ctx context.Context, up bool) error {
 	}
 	s.dnsUp = up
 	return nil
+}
+
+// SetUPnP — через nft: «destroy» + «add» одной транзакцией заменяет и срок
+// существующего проброса (повторное add его не продлило бы).
+func (s *System) SetUPnP(ctx context.Context, m UPnPMapping) error {
+	if err := validMapping(m); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.spec.UPnP.Enabled {
+		return errors.New("dataplane: upnp is off")
+	}
+	return runNft(ctx, renderUPnPSet(m))
+}
+
+func (s *System) DeleteUPnP(ctx context.Context, proto model.Protocol, port uint16) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.spec.UPnP.Enabled {
+		return nil
+	}
+	return runNft(ctx, renderUPnPDelete(proto, port))
+}
+
+func (s *System) UPnPMappings(ctx context.Context) ([]UPnPMapping, error) {
+	s.mu.Lock()
+	on := s.spec.UPnP.Enabled
+	s.mu.Unlock()
+	if !on {
+		return nil, nil
+	}
+	out, err := exec.CommandContext(ctx, "nft", "-j", "list", "map", "inet", nftUPnPTable, "portmap").Output()
+	if err != nil {
+		return nil, fmt.Errorf("dataplane: list upnp: %w", err)
+	}
+	return parseUPnPMap(out)
 }
 
 // SetDevices — множества правил через netlink; таблицы DNS и NAT

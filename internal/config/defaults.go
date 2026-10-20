@@ -174,6 +174,7 @@ func (c *Config) applyDefaults() {
 	orDefault(&d.SetTTL.Min, 5*time.Minute)
 	orDefault(&d.SetTTL.Max, 12*time.Hour)
 	c.applyDHCPDefaults()
+	c.applyUPnPDefaults()
 	if d.FirefoxCanaryNXDomain == nil {
 		d.FirefoxCanaryNXDomain = ptr(true)
 	}

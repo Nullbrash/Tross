@@ -80,6 +80,8 @@ var vendorRules = concat(
 	rules(model.DeviceTypeTV, `roku`, `tcl king`, `vizio`),
 	rules(model.DeviceTypeSmartHome, `espressif`, `tuya`, `shelly|allterco`, `signify|philips lighting`, `ring llc|^ring$`, `sonoff|itead`),
 	rules(model.DeviceTypeServer, `raspberry pi`, `synology`, `qnap`),
+	// Производители материнских плат — ПК (их сетевая карта на плате).
+	rules(model.DeviceTypePC, `micro-star|\bmsi\b`, `asrock`, `giga-byte|gigabyte`),
 )
 
 func concat(rs ...[]typeRule) []typeRule {

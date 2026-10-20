@@ -135,3 +135,18 @@ func TestServiceLoadsSaved(t *testing.T) {
 		t.Errorf("not loaded: %+v", d)
 	}
 }
+
+func TestServicePlaceholderLoggedNotStored(t *testing.T) {
+	ctx := context.Background()
+	s, st := newService(t, Options{})
+	o := Observation{MAC: model.MAC{0x02}, IP: netip.MustParseAddr("192.168.10.77"), At: time.Now()}
+	for range 3 {
+		_ = s.Observe(ctx, o)
+	}
+	if ds, _ := st.Devices(ctx); len(ds) != 0 || len(s.List()) != 0 {
+		t.Errorf("placeholder stored: %v", ds)
+	}
+	if len(s.placeholder) != 1 {
+		t.Errorf("placeholder log state %v", s.placeholder)
+	}
+}

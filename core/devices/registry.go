@@ -42,7 +42,13 @@ var (
 	ErrNotFound = errors.New("devices: no such device")
 	ErrSame     = errors.New("devices: cannot merge a device into itself")
 	ErrInvalid  = errors.New("devices: invalid value")
+	// ErrPlaceholder — MAC-заглушка (02:00:00:00:00:00: так Android скрывает
+	// адрес): не адрес устройства — под ним бывают разные устройства.
+	ErrPlaceholder = errors.New("devices: placeholder MAC")
 )
+
+// IsPlaceholder — MAC, который не опознаёт устройство.
+func IsPlaceholder(m model.MAC) bool { return m == model.MAC{0x02} }
 
 // SameWindow — как давно должна была пропасть запись, чтобы новая могла
 // быть ею после смены MAC.
@@ -83,6 +89,9 @@ func idOf(m model.MAC) string { return "dev-" + strings.ReplaceAll(m.String(), "
 func (r *Registry) Observe(o Observation) (Change, error) {
 	if o.MAC.IsZero() || o.MAC.IsMulticast() {
 		return Change{}, fmt.Errorf("devices: not a client MAC: %s", o.MAC)
+	}
+	if IsPlaceholder(o.MAC) {
+		return Change{}, ErrPlaceholder
 	}
 	if o.At.IsZero() {
 		return Change{}, errors.New("devices: observation without time")
@@ -256,6 +265,11 @@ func (r *Registry) Merge(dstID, srcID string) (model.Device, []model.Device, err
 	default:
 		dst.Type = GuessType(dst.Hints)
 	}
+	for _, p := range src.UPnPPrograms {
+		if !slices.Contains(dst.UPnPPrograms, p) {
+			dst.UPnPPrograms = append(dst.UPnPPrograms, p)
+		}
+	}
 	dst.Aliases = append(append(dst.Aliases, src.ID), src.Aliases...)
 	dst.NotSame = slices.DeleteFunc(append(dst.NotSame, src.NotSame...), func(s string) bool { return s == srcID || s == dstID })
 	dst.NotSame = slices.Compact(sortedCopy(dst.NotSame))
@@ -278,6 +292,30 @@ func (r *Registry) Merge(dstID, srcID string) (model.Device, []model.Device, err
 	}
 	slices.SortFunc(others, func(a, b model.Device) int { return strings.Compare(a.ID, b.ID) })
 	return clone(dst), others, nil
+}
+
+// MaxPrograms — предел программ «всегда» на устройство.
+const MaxPrograms = 32
+
+// AllowProgram — программа устройства открывает порты без вопроса.
+func (r *Registry) AllowProgram(id, desc string) (model.Device, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.devs[id]
+	if !ok {
+		return model.Device{}, ErrNotFound
+	}
+	desc = strings.TrimSpace(desc)
+	switch {
+	case desc == "":
+		return model.Device{}, fmt.Errorf("%w: empty program description", ErrInvalid)
+	case slices.ContainsFunc(d.UPnPPrograms, func(p string) bool { return strings.EqualFold(p, desc) }):
+	case len(d.UPnPPrograms) >= MaxPrograms:
+		return model.Device{}, fmt.Errorf("%w: too many programs", ErrInvalid)
+	default:
+		d.UPnPPrograms = append(d.UPnPPrograms, desc)
+	}
+	return clone(d), nil
 }
 
 // Dismiss — «это другое устройство»: предположение снимается и больше для
@@ -391,6 +429,7 @@ func clone(d *model.Device) model.Device {
 	c.MACs = slices.Clone(d.MACs)
 	c.Aliases = slices.Clone(d.Aliases)
 	c.NotSame = slices.Clone(d.NotSame)
+	c.UPnPPrograms = slices.Clone(d.UPnPPrograms)
 	if d.MaybeSame != nil {
 		s := *d.MaybeSame
 		s.Reasons = slices.Clone(s.Reasons)

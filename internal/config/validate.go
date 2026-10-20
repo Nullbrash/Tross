@@ -49,6 +49,7 @@ func (c *Config) Validate() error {
 	c.validateClassify(&p)
 	c.validateInbound(&p)
 	c.validateDHCP(&p)
+	c.validateUPnP(&p)
 	c.validateDNS(&p)
 	c.validateLists(&p)
 	c.validateDPI(&p)

@@ -33,17 +33,35 @@ func announce(args []string) error {
 	addr := fs.String("addr", "", "address for the mDNS A record")
 	model := fs.String("model", "", "model= in _device-info")
 	ssdp := fs.String("ssdp", "", "send an SSDP NOTIFY with this SERVER header")
+	count := fs.Int("count", 1, "how many times (mDNS, SSDP)")
+	every := fs.Duration("every", 0, "pause between repeats")
 	_ = fs.Parse(args)
+	if *count > 1 && !*dhcp {
+		for i := range *count {
+			if err := announceOnce(*mdns, *addr, *model, *ssdp); err != nil {
+				return fmt.Errorf("announce %d: %w", i, err)
+			}
+			time.Sleep(*every)
+		}
+		return nil
+	}
 	switch {
 	case *dhcp:
 		return announceDHCP(*mac, *hostname, *vendor, *params)
 	case *mdns != "":
 		return announceMDNS(*mdns, *addr, *model)
 	case *ssdp != "":
-		msg := "NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nCACHE-CONTROL: max-age=1800\r\nNT: upnp:rootdevice\r\nNTS: ssdp:alive\r\nSERVER: " + *ssdp + "\r\nUSN: uuid:lab::upnp:rootdevice\r\n\r\n"
-		return sendUDP("239.255.255.250:1900", []byte(msg), 0)
+		return announceOnce("", "", "", *ssdp)
 	}
 	return errors.New("announce: want -dhcp, -mdns or -ssdp")
+}
+
+func announceOnce(mdns, addr, model, ssdp string) error {
+	if mdns != "" {
+		return announceMDNS(mdns, addr, model)
+	}
+	msg := "NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nCACHE-CONTROL: max-age=1800\r\nNT: upnp:rootdevice\r\nNTS: ssdp:alive\r\nSERVER: " + ssdp + "\r\nUSN: uuid:lab::upnp:rootdevice\r\n\r\n"
+	return sendUDP("239.255.255.250:1900", []byte(msg), 0)
 }
 
 func announceDHCP(macS, hostname, vendor, params string) error {

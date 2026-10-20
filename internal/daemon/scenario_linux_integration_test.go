@@ -5,13 +5,14 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,12 +39,40 @@ func labCfg(t *testing.T) *config.Config {
 }
 
 // startDaemon запускает демон и ждёт, пока монитор поднимет все каналы.
+// syncBuffer — журнал демона в памяти: печатается, если тест упал.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
 func startDaemon(t *testing.T, cfg *config.Config) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	logs := &syncBuffer{}
+	t.Cleanup(func() {
+		if t.Failed() {
+			out := logs.String()
+			if len(out) > 20000 {
+				out = out[len(out)-20000:]
+			}
+			t.Logf("daemon log (tail):\n%s", out)
+		}
+	})
 	go func() {
-		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Version: "itest"})
+		done <- Run(ctx, Options{Config: cfg, Log: slog.New(slog.NewTextHandler(logs, nil)), Version: "itest"})
 	}()
 	stopped := false
 	stop := func() {

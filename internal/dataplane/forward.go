@@ -158,7 +158,7 @@ func renderForwardNAT(spec Spec) string {
 }
 
 // renderInboundFilter — из каналов пересылаются только ответы на свои
-// соединения и пробросы; всё прочее (в том числе пакеты на адреса LAN,
+// соединения и пробросы, к самому мини-ПК — только ответы; всё прочее (в том числе пакеты на адреса LAN,
 // если их направит к нам кто-то в сети провайдера) отбрасывается, как на
 // обычном роутере. Живёт в tross_nat: защита не должна пропадать вместе с
 // демоном, а исходящим соединениям LAN она не мешает и без него.
@@ -172,6 +172,16 @@ func renderInboundFilter(spec Spec) string {
 	fmt.Fprintf(&b, "\t\tiifname { %s } ct state established,related accept\n", wans)
 	fmt.Fprintf(&b, "\t\tiifname { %s } ct status dnat accept\n", wans)
 	fmt.Fprintf(&b, "\t\tiifname { %s } counter drop\n", wans)
+	b.WriteString("\t}\n")
+	// Сам мини-ПК со стороны каналов: только ответы на свои соединения
+	// (пробы, DNS, загрузки) и ответы DHCP провайдера. Без этого пакет на
+	// адрес LAN мини-ПК от провайдера (или соседа по его сети) дошёл бы до
+	// резолвера, API и SSH. Молча: закрытый порт не выдаёт машину. Только
+	// IPv4 (IPv6 не поддерживается, на мини-ПК он выключен).
+	b.WriteString("\tchain input {\n\t\ttype filter hook input priority filter; policy accept;\n")
+	fmt.Fprintf(&b, "\t\tiifname { %s } meta nfproto ipv4 ct state established,related accept\n", wans)
+	fmt.Fprintf(&b, "\t\tiifname { %s } meta nfproto ipv4 udp sport 67 udp dport 68 accept\n", wans)
+	fmt.Fprintf(&b, "\t\tiifname { %s } meta nfproto ipv4 counter drop\n", wans)
 	b.WriteString("\t}\n")
 	return b.String()
 }

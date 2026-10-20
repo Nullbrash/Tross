@@ -36,6 +36,7 @@ type Config struct {
 	DPI      DPI      `yaml:"dpi"`
 	Proxy    Proxy    `yaml:"proxy"`
 	Devices  Devices  `yaml:"devices"`
+	UPnP     UPnP     `yaml:"upnp"`
 }
 
 type Daemon struct {

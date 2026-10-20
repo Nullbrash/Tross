@@ -21,7 +21,10 @@ const (
 	TopicDeviceSame Topic = "device.same"
 	// TopicDHCP — раздача адресов: второй DHCP-сервер в LAN (данные —
 	// DHCPEvent).
-	TopicDHCP        Topic = "dhcp"
+	TopicDHCP Topic = "dhcp"
+	// TopicUPnP — пробросы по запросу программ: открыт, закрыт, отказ, ждёт
+	// решения пользователя (данные — UPnPEvent).
+	TopicUPnP        Topic = "upnp"
 	TopicDNSWatchdog Topic = "dns.watchdog"
 	// TopicLinkRound — каждый раунд проб монитора (данные — LinkRound):
 	// живой сигнал для очередей CAKE; в журнал и историю не пишется.
@@ -39,7 +42,20 @@ const (
 // JournalTopics — темы, которые пишутся в журнал и историю событий:
 // всё, кроме частых служебных (раунды проб).
 func JournalTopics() []Topic {
-	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDeviceSame, TopicDHCP, TopicDNSWatchdog, TopicSQM, TopicDNSDebug, TopicDPI}
+	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDeviceSame, TopicDHCP, TopicUPnP, TopicDNSWatchdog, TopicSQM, TopicDNSDebug, TopicDPI}
+}
+
+// UPnPEvent — данные события TopicUPnP; Action — open, close, refuse, ask.
+type UPnPEvent struct {
+	Action  string `json:"action"`
+	Device  string `json:"device,omitempty"`
+	Addr    string `json:"addr"`
+	Proto   string `json:"proto"`
+	ExtPort uint16 `json:"ext_port"`
+	IntPort uint16 `json:"int_port,omitempty"`
+	Desc    string `json:"desc,omitempty"`
+	Via     string `json:"via,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // DHCPEvent — данные события TopicDHCP.

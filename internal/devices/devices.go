@@ -71,6 +71,9 @@ type Service struct {
 	addrs    map[addrKey]store.DeviceAddr
 	probed   map[string]bool
 	fullWarn time.Time
+	// placeholder — когда последний раз писали в журнал о MAC-заглушке с
+	// этого адреса.
+	placeholder map[netip.Addr]time.Time
 }
 
 func New(ctx context.Context, opts Options) (*Service, error) {
@@ -84,7 +87,7 @@ func New(ctx context.Context, opts Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{opts: opts, reg: coredevices.NewRegistry(), seen: map[string]bool{}, addrs: map[addrKey]store.DeviceAddr{}, probed: map[string]bool{}}
+	s := &Service{opts: opts, reg: coredevices.NewRegistry(), seen: map[string]bool{}, addrs: map[addrKey]store.DeviceAddr{}, probed: map[string]bool{}, placeholder: map[netip.Addr]time.Time{}}
 	s.reg.Load(ds)
 	return s, nil
 }
@@ -108,6 +111,10 @@ func (s *Service) Observe(ctx context.Context, o Observation) error {
 		return ErrTooMany
 	}
 	ch, err := s.reg.Observe(o)
+	if errors.Is(err, coredevices.ErrPlaceholder) {
+		s.notePlaceholder(o)
+		return err
+	}
 	if err != nil {
 		return err
 	}
@@ -157,6 +164,25 @@ func (s *Service) Observe(ctx context.Context, o Observation) error {
 		s.changed()
 	}
 	return nil
+}
+
+// notePlaceholder — устройство с MAC-заглушкой: в реестр не попадает,
+// в журнал — не чаще раза в час на адрес.
+func (s *Service) notePlaceholder(o Observation) {
+	s.mu.Lock()
+	t, seen := s.placeholder[o.IP]
+	write := !seen || o.At.Sub(t) >= time.Hour
+	if write {
+		if len(s.placeholder) > 256 {
+			clear(s.placeholder)
+		}
+		s.placeholder[o.IP] = o.At
+	}
+	s.mu.Unlock()
+	if write {
+		s.opts.Log.Info("devices: placeholder MAC, not registered", "mac", o.MAC, "addr", o.IP,
+			"dhcp_hostname", o.Hints.DHCPHostname, "mdns_name", o.Hints.MDNSName, "vendor_class", o.Hints.DHCPVendorClass)
+	}
 }
 
 func (s *Service) publish(t event.Topic, d model.Device) {
@@ -274,6 +300,15 @@ func (s *Service) Merge(ctx context.Context, dstID, srcID string) (model.Device,
 	s.opts.Log.Info("devices: merged", "into", dstID, "from", srcID)
 	s.changed()
 	return d, nil
+}
+
+// AllowProgram — «разрешить всегда» программе устройства.
+func (s *Service) AllowProgram(ctx context.Context, id, desc string) (model.Device, error) {
+	d, err := s.reg.AllowProgram(id, desc)
+	if err != nil {
+		return d, err
+	}
+	return d, s.opts.Store.SaveDevices(ctx, []model.Device{d})
 }
 
 func (s *Service) Dismiss(ctx context.Context, id string) (model.Device, error) {

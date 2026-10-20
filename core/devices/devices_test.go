@@ -81,6 +81,9 @@ func TestGuessType(t *testing.T) {
 		{model.DeviceHints{Vendor: "Sony Interactive Entertainment"}, model.DeviceTypeConsole},
 		{model.DeviceHints{DHCPHostname: "ESP_3A1B2C"}, model.DeviceTypeSmartHome},
 		{model.DeviceHints{Vendor: "Espressif"}, model.DeviceTypeSmartHome},
+		{model.DeviceHints{Vendor: "ASRock Incorporation"}, model.DeviceTypePC},
+		// Телефон, назвавшийся по модели (имя владельца — в начале).
+		{model.DeviceHints{DHCPHostname: "Owner-SAMSUNG-SM-S911B", DHCPVendorClass: "android-dhcp-15"}, model.DeviceTypePhone},
 		{model.DeviceHints{DHCPHostname: "raspberrypi"}, model.DeviceTypeServer},
 		{model.DeviceHints{SSDPServer: "Linux/4.4 UPnP/1.0 webOS/1.0"}, model.DeviceTypeTV},
 		{model.DeviceHints{MDNSModel: "MacBookPro18,3", DHCPHostname: "anything"}, model.DeviceTypePC},
@@ -363,5 +366,38 @@ func TestMergeRepointsSuggestions(t *testing.T) {
 	}
 	if _, _, err := r.Merge(a.ID, "dev-missing"); err != ErrNotFound {
 		t.Errorf("missing src: %v", err)
+	}
+}
+
+func TestAllowProgram(t *testing.T) {
+	r := NewRegistry()
+	a := observe(t, r, Observation{MAC: mac(t, "00:03:93:00:00:01"), At: t0}).Device
+	b := observe(t, r, Observation{MAC: mac(t, "a6:00:00:00:00:02"), At: t0.Add(time.Hour)}).Device
+	if _, err := r.AllowProgram(a.ID, "TorrentClient"); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := r.AllowProgram(a.ID, "TORRENTCLIENT"); len(d.UPnPPrograms) != 1 {
+		t.Errorf("duplicate program: %v", d.UPnPPrograms)
+	}
+	if _, err := r.AllowProgram(a.ID, " "); err == nil {
+		t.Error("empty description accepted")
+	}
+	r.AllowProgram(b.ID, "Steam")
+	d, _, _ := r.Merge(a.ID, b.ID)
+	if len(d.UPnPPrograms) != 2 {
+		t.Errorf("programs after merge: %v", d.UPnPPrograms)
+	}
+}
+
+func TestPlaceholderMACNotRegistered(t *testing.T) {
+	r := NewRegistry()
+	if _, err := r.Observe(Observation{MAC: mac(t, "02:00:00:00:00:00"), At: t0}); err != ErrPlaceholder {
+		t.Fatalf("placeholder: %v", err)
+	}
+	if r.Len() != 0 {
+		t.Error("placeholder registered")
+	}
+	if !IsPlaceholder(mac(t, "02:00:00:00:00:00")) || IsPlaceholder(mac(t, "02:00:00:00:00:01")) {
+		t.Error("IsPlaceholder")
 	}
 }

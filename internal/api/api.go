@@ -39,6 +39,8 @@ type Options struct {
 	Lists Lists
 	// Devices — реестр устройств; nil — недоступен.
 	Devices Devices
+	// UPnP — пробросы по запросу программ; nil — нет.
+	UPnP UPnP
 	// DHCP — раздача адресов; nil — выключена.
 	DHCP            func(ctx context.Context) DHCPStatus
 	AllowedNetworks []netip.Prefix
@@ -77,6 +79,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/devices/{id}/dismiss", s.handleDeviceDismiss)
 	mux.HandleFunc("DELETE /api/devices/{id}", s.handleDeviceForget)
 	mux.HandleFunc("GET /api/dhcp", s.handleDHCP)
+	mux.HandleFunc("GET /api/upnp", s.handleUPnP)
+	mux.HandleFunc("POST /api/upnp/pending/{id}", s.handleUPnPResolve)
+	mux.HandleFunc("DELETE /api/upnp/mappings/{proto}/{port}", s.handleUPnPClose)
 	// С методом GET: иначе этот шаблон перехватил бы POST /api/health вместо ответа 405.
 	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})

@@ -101,6 +101,11 @@ func TestInboundFilter(t *testing.T) {
 		wans + "ct state established,related accept\n",
 		wans + "ct status dnat accept\n",
 		wans + "counter drop\n",
+		// К самому мини-ПК — только ответы и DHCP провайдера.
+		"type filter hook input priority filter; policy accept;\n",
+		wans + "meta nfproto ipv4 ct state established,related accept\n",
+		wans + "meta nfproto ipv4 udp sport 67 udp dport 68 accept\n",
+		wans + "meta nfproto ipv4 counter drop\n",
 	}
 	last := -1
 	for _, r := range rules {

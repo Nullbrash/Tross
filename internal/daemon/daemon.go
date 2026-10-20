@@ -95,6 +95,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	binder.last = binder.binding()
 	dhcpSvc = newDHCPService(cfg, devSvc.Registry(), log, bus)
+	upnpSvc := newUPnPService(cfg, dp, devSvc, log, bus)
 	// Слушатели LAN — только на мини-ПК: в «сухом» режиме сеть машины не
 	// трогается (ни сырых сокетов, ни групп multicast).
 	if !cfg.Daemon.DryRun {
@@ -187,6 +188,7 @@ func Run(ctx context.Context, opts Options) error {
 			Lists:           listsAPI,
 			Devices:         &devicesAPI{svc: devSvc, binder: binder, def: cfg.Devices.DefaultDNSMode},
 			DHCP:            dhcpSvc.statusFunc(),
+			UPnP:            &upnpAPI{u: upnpSvc, reg: devSvc.Registry()},
 			AllowedNetworks: cfg.API.AllowedNetworks,
 			Version:         opts.Version,
 			DryRun:          cfg.Daemon.DryRun,
@@ -226,6 +228,9 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	if dhcpSvc != nil {
 		wg.Go(func() { dhcpSvc.run(runCtx, devSvc, srcs) })
+	}
+	if upnpSvc != nil {
+		wg.Go(func() { upnpSvc.run(runCtx) })
 	}
 	if dpiSvc != nil {
 		wg.Go(func() { dpiSvc.run(runCtx) })
@@ -425,6 +430,7 @@ func dataplaneSpec(cfg *config.Config, binder *deviceBinder) (dataplane.Spec, er
 			spec.DNS.Devices = binder.binding().DNS
 		}
 	}
+	spec.UPnP = upnpSpec(cfg)
 	if cfg.DPI.Enabled {
 		for i, l := range cfg.Links {
 			if len(cfg.DPI.Links) == 0 || slices.Contains(cfg.DPI.Links, l.ID) {

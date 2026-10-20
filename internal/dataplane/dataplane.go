@@ -50,6 +50,8 @@ type Spec struct {
 	DNS DNSSpec
 	// DPI — каналы с движком обхода DPI.
 	DPI DPISpec
+	// UPnP — пробросы по запросу программ доверенных устройств.
+	UPnP UPnPSpec
 }
 
 // SetElement — адрес в множество ядра на срок.
@@ -121,6 +123,11 @@ type Dataplane interface {
 	// SetDevices ставит адреса устройств правил, режимы DNS устройств и
 	// адреса пробросов; меняется только то, что отличается от прежнего.
 	SetDevices(ctx context.Context, b DeviceBinding) error
+	// SetUPnP ставит или продлевает проброс программы (срок — m.Lease, его
+	// держит ядро); DeleteUPnP снимает; UPnPMappings — пробросы из ядра.
+	SetUPnP(ctx context.Context, m UPnPMapping) error
+	DeleteUPnP(ctx context.Context, proto model.Protocol, port uint16) error
+	UPnPMappings(ctx context.Context) ([]UPnPMapping, error)
 	// FlushConntrack сбрасывает соединения, закреплённые за упавшим каналом.
 	FlushConntrack(ctx context.Context, id model.LinkID) error
 	// RepairRoutes ставит заново маршруты таблиц каналов, если их нет или

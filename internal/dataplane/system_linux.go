@@ -114,7 +114,7 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	}
 	// Перехват DNS — пока на запасной резолвер: резолвер демона ещё не
 	// слушает, на него переключит SetDNS.
-	if err := runNft(ctx, renderNAT(spec)+renderDNS(spec, false)+renderBase(spec)+renderPlan(c, spec.Links, s.plan)); err != nil {
+	if err := runNft(ctx, renderNAT(spec)+renderUPnP(spec)+renderDNS(spec, false)+renderBase(spec)+renderPlan(c, spec.Links, s.plan)); err != nil {
 		return fail(err)
 	}
 	// Очереди — качество, а не связь: без них сеть работает, поэтому ошибка
@@ -147,6 +147,9 @@ func validateSpec(spec Spec) error {
 	}
 	if len(spec.Links) >= rulePrefSpan {
 		return errors.New("dataplane: too many links")
+	}
+	if err := validateUPnP(spec); err != nil {
+		return err
 	}
 	if err := validateForwards(spec); err != nil {
 		return fmt.Errorf("dataplane: %w", err)
@@ -325,6 +328,8 @@ func (s *System) cleanupLocked(ctx context.Context, purge bool) error {
 	if purge {
 		script += fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftNATTable, nftNATTable)
 		script += fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftDNSTable, nftDNSTable)
+		// Пробросы программ переживают остановку (сроки держит ядро).
+		script += fmt.Sprintf("add table inet %s\ndelete table inet %s\n", nftUPnPTable, nftUPnPTable)
 		// Очереди переживают остановку демона (как NAT) — снимает их только purge.
 		s.shaping = map[model.LinkID]Shaping{}
 		for i, l := range s.spec.Links {
