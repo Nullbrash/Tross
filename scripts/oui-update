@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Обновление встроенной базы производителей по MAC (core/devices/oui.txt.gz)
+# из реестров IEEE: три CSV, ~5 МБ, одна загрузка.
+#
+#   scripts/oui-update
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+for f in oui/oui.csv oui28/mam.csv oui36/oui36.csv; do
+	# Сайт IEEE отвечает 418 на запросы без браузерного User-Agent.
+	curl -fsS -L --max-time 120 -A "Mozilla/5.0" -o "$tmp/$(basename "$f")" "https://standards-oui.ieee.org/$f"
+done
+(cd core/devices && go run gen_oui.go -dir "$tmp" -out oui.txt.gz)

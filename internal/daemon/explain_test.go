@@ -39,7 +39,7 @@ func explainBench(t *testing.T) (*explainer, *dataplane.Fake, *balancer) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cls, err := newClassifier(cfg, cat, nil)
+	cls, err := newClassifier(cfg, cat, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

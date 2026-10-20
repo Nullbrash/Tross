@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/netip"
 	"os"
 	"slices"
 	"sync/atomic"
@@ -82,6 +83,11 @@ var migrations = []string{
 	   checked_at INTEGER NOT NULL, used_at INTEGER, PRIMARY KEY (key, link)) WITHOUT ROWID;
 	 CREATE TABLE dpi_scores (link TEXT NOT NULL, strategy TEXT NOT NULL, opened INTEGER, failed INTEGER, last_ok INTEGER,
 	   PRIMARY KEY (link, strategy)) WITHOUT ROWID;`,
+	// Адреса устройств в LAN по времени (MAC + IP), срок — как у событий.
+	`CREATE TABLE device_addrs (mac TEXT NOT NULL, ip TEXT NOT NULL, device TEXT NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL,
+	   PRIMARY KEY (mac, ip)) WITHOUT ROWID;
+	 CREATE INDEX device_addrs_device ON device_addrs (device);
+	 CREATE INDEX device_addrs_last ON device_addrs (last);`,
 }
 
 func (s *SQLite) migrate() error {
@@ -156,12 +162,132 @@ func (s *SQLite) SaveDevice(ctx context.Context, d model.Device) error {
 	return err
 }
 
+// SaveDevices — пачка записей одной транзакцией (время «последний раз в
+// сети» сохраняется так, а не на каждое наблюдение).
+func (s *SQLite) SaveDevices(ctx context.Context, ds []model.Device) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, d := range ds {
+		if d.ID == "" {
+			return errors.New("store: device id is empty")
+		}
+		b, err := json.Marshal(d)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO devices (id, data) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET data = excluded.data`, d.ID, b); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// DeleteDevice удаляет запись вместе с историей её адресов.
 func (s *SQLite) DeleteDevice(ctx context.Context, id string) error {
 	if err := s.check(); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM devices WHERE id = ?`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM devices WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM device_addrs WHERE device = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// MergeDevice сохраняет итоговую запись объединения, удаляет влитую и
+// переносит к итоговой историю её адресов — одной транзакцией.
+func (s *SQLite) MergeDevice(ctx context.Context, dst model.Device, srcID string) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	b, err := json.Marshal(dst)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO devices (id, data) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET data = excluded.data`, []any{dst.ID, b}},
+		{`DELETE FROM devices WHERE id = ?`, []any{srcID}},
+		{`UPDATE device_addrs SET device = ? WHERE device = ?`, []any{dst.ID, srcID}},
+	} {
+		if _, err := tx.ExecContext(ctx, q.sql, q.args...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// TouchDeviceAddrs отмечает адреса пачкой: новая пара MAC + IP —
+// запись, известная — сдвиг last.
+func (s *SQLite) TouchDeviceAddrs(ctx context.Context, as []DeviceAddr) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, a := range as {
+		if a.Device == "" || !a.IP.IsValid() {
+			return fmt.Errorf("store: bad device address %+v", a)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO device_addrs (mac, ip, device, first, last) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (mac, ip) DO UPDATE SET device = excluded.device, first = MIN(first, excluded.first), last = MAX(last, excluded.last)`,
+			a.MAC.String(), a.IP.String(), a.Device, a.First.UnixMilli(), a.Last.UnixMilli()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// DeviceAddrs — история адресов устройства, свежие первыми.
+func (s *SQLite) DeviceAddrs(ctx context.Context, device string) ([]DeviceAddr, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT mac, ip, first, last FROM device_addrs WHERE device = ? ORDER BY last DESC, ip`, device)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DeviceAddr
+	for rows.Next() {
+		var mac, ip string
+		var first, last int64
+		if err := rows.Scan(&mac, &ip, &first, &last); err != nil {
+			return nil, err
+		}
+		a := DeviceAddr{Device: device, First: time.UnixMilli(first).UTC(), Last: time.UnixMilli(last).UTC()}
+		if a.MAC, err = model.ParseMAC(mac); err != nil {
+			return nil, err
+		}
+		if a.IP, err = netip.ParseAddr(ip); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLite) Devices(ctx context.Context) ([]model.Device, error) {
@@ -337,8 +463,10 @@ func (s *SQLite) Rollup(ctx context.Context, now time.Time) error {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE at < ?`, now.Add(-s.ret.Events).UnixMilli()); err != nil {
-		return err
+	for _, q := range []string{`DELETE FROM events WHERE at < ?`, `DELETE FROM device_addrs WHERE last < ?`} {
+		if _, err := tx.ExecContext(ctx, q, now.Add(-s.ret.Events).UnixMilli()); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

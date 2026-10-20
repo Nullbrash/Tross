@@ -12,6 +12,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"tross/core/devices"
 	coredns "tross/core/dns"
 	coredpi "tross/core/dpi"
 	"tross/core/lists"
@@ -214,11 +215,11 @@ type Classify struct {
 }
 
 // ClassifyRule — правило пользователя: условие как в профилях и, по желанию,
-// адреса устройств (до реестра устройств — по IPv4 из LAN).
+// устройства (IPv4, MAC или id записи реестра).
 type ClassifyRule struct {
 	Name          string             `yaml:"name"`
 	Class         model.TrafficClass `yaml:"class"`
-	Devices       []netip.Addr       `yaml:"devices"`
+	Devices       []devices.Ref      `yaml:"devices"`
 	profile.Match `yaml:",inline"`
 }
 
@@ -246,8 +247,9 @@ type DNS struct {
 	Hosts map[string]netip.Addr `yaml:"hosts"`
 }
 
+// DNSDevice — режим DNS устройства; Address — IPv4, MAC или id записи.
 type DNSDevice struct {
-	Address netip.Addr    `yaml:"address"`
+	Address devices.Ref   `yaml:"address"`
 	Mode    model.DNSMode `yaml:"mode"`
 }
 

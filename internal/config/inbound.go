@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"slices"
 
+	"tross/core/devices"
 	"tross/core/model"
 	"tross/core/profile"
 )
@@ -22,7 +23,9 @@ type PortForward struct {
 	Proto string `yaml:"proto"`
 	// Port — внешний порт или диапазон «27015-27030».
 	Port profile.PortRange `yaml:"port"`
-	To   netip.Addr        `yaml:"to"`
+	// To — устройство: IPv4, MAC или id записи реестра (проброс следует за
+	// устройством при смене адреса).
+	To devices.Ref `yaml:"to"`
 	// ToPort — порт на устройстве; 0 — как снаружи (у диапазона — только так).
 	ToPort uint16 `yaml:"to_port"`
 	// Links — каналы, на которых открыт проброс; пусто — все.
@@ -72,8 +75,11 @@ func (c *Config) validateInbound(p *problems) {
 		if f.ToPort != 0 && f.Port.To != f.Port.From {
 			p.add(fp+".to_port", "not allowed with a port range: ports are kept as is")
 		}
-		if !f.To.Is4() || !slices.ContainsFunc(c.LAN.Networks, func(n netip.Prefix) bool { return n.Contains(f.To) }) {
-			p.add(fp+".to", "%s: want an IPv4 address in lan.networks", f.To)
+		switch {
+		case f.To.IsZero():
+			p.add(fp+".to", "required: an IPv4 address in lan.networks, a MAC or a device id")
+		case f.To.Addr.IsValid() && !slices.ContainsFunc(c.LAN.Networks, func(n netip.Prefix) bool { return n.Contains(f.To.Addr) }):
+			p.add(fp+".to", "%s: not in lan.networks", f.To)
 		}
 		for _, id := range f.Links {
 			if !c.linkExists(id) {

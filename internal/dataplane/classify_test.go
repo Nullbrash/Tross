@@ -100,8 +100,10 @@ func TestRenderClassifyRulesAndSets(t *testing.T) {
 	got := renderBase(spec)
 	gid, vid, bid := c.classID(model.ClassGaming), c.classID(model.ClassVoIP), c.classID(model.ClassBulk)
 	for _, want := range []string{
-		// Правило пользователя: устройство + TCP-порт → bulk.
-		`ip saddr 192.168.10.20 tcp dport 40000 meta mark set 0x4 goto cls4`,
+		// Правило пользователя: устройство + TCP-порт → bulk; адреса
+		// устройств — в множестве правила (меняются при смене адреса).
+		`ip saddr @tross_ud0 tcp dport 40000 meta mark set 0x4 goto cls4`,
+		"set tross_ud0 {\n\t\ttype ipv4_addr\n\t\telements = { 192.168.10.20 }\n\t}",
 		// STUN — по magic cookie в первом пакете UDP; голос Discord — по IP discovery.
 		`meta l4proto udp @ih,32,32 0x2112a442 meta mark set 0x2 goto cls2`,
 		`meta l4proto udp udp length 82 @ih,0,32 0x00010046 meta mark set 0x2 goto cls2`,
@@ -195,5 +197,21 @@ func TestMergePlanKeepsOtherClasses(t *testing.T) {
 	}
 	if !plansEqual(got, slices.Clone(got)) || plansEqual(got, prev) {
 		t.Error("plansEqual")
+	}
+}
+
+// Правило только для устройств, адресов которых ещё нет: множество пустое —
+// правило ни с кем не совпадает (а не со всеми, как правило без устройств).
+func TestDeviceRuleWithoutAddresses(t *testing.T) {
+	c := CompileClassify([]model.TrafficClass{model.ClassDefault, model.ClassBulk}, nil,
+		[]UserRule{{Name: "phone", Class: model.ClassBulk, ByDevice: true, Match: profile.Match{Proto: model.ProtoTCP, Ports: []profile.PortRange{{From: 1, To: 1}}}}}, profile.Catalog{})
+	spec := testSpec()
+	spec.Classify = c
+	got := renderBase(spec)
+	if !strings.Contains(got, "ip saddr @tross_ud0 tcp dport 1 ") || strings.Contains(got, "elements") {
+		t.Errorf("ruleset:\n%s", got)
+	}
+	if sets := c.deviceSets(); len(sets) != 1 || sets[0] != DeviceSet(0) {
+		t.Errorf("device sets %v", sets)
 	}
 }

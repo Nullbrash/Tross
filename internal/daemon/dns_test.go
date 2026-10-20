@@ -53,7 +53,7 @@ func dnsRouteBench(t *testing.T, pins []dataplane.Pin) *dnsService {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cls, err := newClassifier(cfg, cat, nil)
+	cls, err := newClassifier(cfg, cat, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,8 +137,8 @@ func TestDNSServiceSwitchesInterception(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	dp := dataplane.NewFake(log)
 	cat, _ := serviceCatalog(cfg)
-	cls, _ := newClassifier(cfg, cat, nil)
-	spec, err := dataplaneSpec(cfg)
+	cls, _ := newClassifier(cfg, cat, nil, nil)
+	spec, err := dataplaneSpec(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

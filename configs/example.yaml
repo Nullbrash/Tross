@@ -223,7 +223,7 @@ classify:
   rules: []
   #  - name: pc-torrent          # входящие к торрент-клиенту ПК — загрузки
   #    class: bulk
-  #    devices: [192.168.10.20]  # до реестра устройств — по IPv4
+  #    devices: [192.168.10.20]  # IPv4, MAC (aa:bb:cc:dd:ee:ff) или id записи (dev-…)
   #    proto: tcp
   #    ports: ["51413"]
   services: []
@@ -244,7 +244,7 @@ inbound:
   #  - name: minecraft
   #    proto: tcp                # tcp | udp | both; по умолчанию tcp
   #    port: 25565               # внешний порт или диапазон "27015-27030"
-  #    to: 192.168.10.50         # устройство (адрес из lan.networks)
+  #    to: 192.168.10.50         # устройство: IPv4 из lan.networks, MAC или id записи
   #    to_port: 25565            # порт на устройстве; по умолчанию — как port
   #    links: [isp1, isp2]
   # Защита пробросов — всегда включена, общая для всех; ограничения — на
@@ -305,6 +305,11 @@ dns:
   set_ttl: { min: 5m, max: 12h }    # пределы таймаута IP в множествах nftables
   firefox_canary_nxdomain: true     # NXDOMAIN на use-application-dns.net
   watchdog: { interval: 5s, failures: 3 }
+  # Режим DNS отдельных устройств (остальным — devices.default_dns_mode);
+  # address — IPv4, MAC или id записи реестра. Режим из конфига важнее
+  # заданного через API.
+  # devices:
+  #   - { address: "aa:bb:cc:dd:ee:ff", mode: exempt }
 
 # Онлайн-списки — этап 4. Нижний слой правил: ручные > выученные >
 # встроенные в Tross («никогда не трогать»: время, STUN, игровые сети,
@@ -389,7 +394,15 @@ proxy:
   routing_mark_base: 0x10000        # метки прокси — выше меток каналов
   # Ключи и подписки добавляются через интерфейс и хранятся в БД.
 
-# Реестр устройств — этап 7, пока не используется.
+# Реестр устройств: записи по MAC из того, что устройства сами сообщают в
+# LAN (DHCP, ARP, mDNS, SSDP) — имя, производитель, тип. Устройство в
+# правилах (classify, dns.devices, inbound) можно указать по MAC или id
+# записи — правило следует за ним при смене адреса. Имена, типы, режимы —
+# через API (/api/devices). Смена случайного MAC: Tross только предлагает
+# «похоже на…», объединяет пользователь.
 devices:
-  notify_new: true
-  default_dns_mode: observe         # observe | redirect | block | exempt
+  notify_new: true                  # событие device.new о новом устройстве
+  # Обычный DNS (53) устройств на чужие серверы: redirect — к резолверу
+  # Tross; observe — не трогать; block — отбросить (и DoT); exempt — не
+  # трогать никогда. DoT и DoH не перехватываются (Android).
+  default_dns_mode: redirect        # observe | redirect | block | exempt

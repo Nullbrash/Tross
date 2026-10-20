@@ -24,6 +24,7 @@ import (
 	"tross/internal/config"
 	"tross/internal/control"
 	"tross/internal/dataplane"
+	"tross/internal/devices"
 	"tross/internal/linkmon"
 	"tross/internal/logring"
 	"tross/internal/resolver"
@@ -63,16 +64,49 @@ func Run(ctx context.Context, opts Options) error {
 		logs = logring.New(cfg.Log.RingSize)
 	}
 
+	// Реестр — до правил ядра: ссылки на устройства (MAC, id) в правилах
+	// получают адреса уже при Setup.
+	var binder *deviceBinder
+	var srcs *devices.Sources
+	devSvc, err := devices.New(ctx, devices.Options{
+		Store: st, Bus: bus, Log: log, NotifyNew: *cfg.Devices.NotifyNew,
+		OnChange: func() { binder.changed() },
+		Probe: func(d model.Device) {
+			if srcs != nil {
+				srcs.Probe(d)
+			}
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("devices: %w", err)
+	}
 	dp, err := newDataplane(cfg, log)
 	if err != nil {
 		return err
 	}
-	spec, err := dataplaneSpec(cfg)
+	binder = newDeviceBinder(cfg, devSvc.Registry(), dp, log)
+	spec, err := dataplaneSpec(cfg, binder)
 	if err != nil {
 		return err
 	}
 	if err := dp.Setup(ctx, spec); err != nil {
 		return fmt.Errorf("dataplane setup: %w", err)
+	}
+	binder.last = binder.binding()
+	// Слушатели LAN — только на мини-ПК: в «сухом» режиме сеть машины не
+	// трогается (ни сырых сокетов, ни групп multicast).
+	if !cfg.Daemon.DryRun {
+		srcs, err = devices.NewSources(devices.SourceOptions{
+			Interface: cfg.LAN.Interface, Networks: cfg.LAN.Networks, Log: log,
+			Observe: func(o devices.Observation) {
+				if err := devSvc.Observe(ctx, o); err != nil && !errors.Is(err, devices.ErrTooMany) {
+					log.Debug("devices: observation", "err", err)
+				}
+			},
+		})
+		if err != nil {
+			log.Warn("devices: LAN sources not started", "err", err)
+		}
 	}
 	defer func() {
 		// Контекст запуска уже отменён — снимаем правила с собственным таймаутом.
@@ -109,7 +143,7 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("manual rules: %w", err)
 	}
-	cls, err := newClassifier(cfg, cat, rules)
+	cls, err := newClassifier(cfg, cat, rules, binder.refs)
 	if err != nil {
 		return fmt.Errorf("classifier: %w", err)
 	}
@@ -149,6 +183,7 @@ func Run(ctx context.Context, opts Options) error {
 			SQM:             sqmc.status,
 			DNS:             dnsStatus,
 			Lists:           listsAPI,
+			Devices:         &devicesAPI{svc: devSvc, binder: binder, def: cfg.Devices.DefaultDNSMode},
 			AllowedNetworks: cfg.API.AllowedNetworks,
 			Version:         opts.Version,
 			DryRun:          cfg.Daemon.DryRun,
@@ -181,6 +216,11 @@ func Run(ctx context.Context, opts Options) error {
 		wg.Go(func() { dnsSvc.intercept.run(runCtx, mon, dnsSvc.dial) })
 	}
 	wg.Go(func() { lists.Run(runCtx) })
+	wg.Go(func() { devSvc.Run(runCtx) })
+	wg.Go(func() { binder.run(runCtx) })
+	if srcs != nil {
+		wg.Go(func() { srcs.Run(runCtx) })
+	}
 	if dpiSvc != nil {
 		wg.Go(func() { dpiSvc.run(runCtx) })
 	}
@@ -265,7 +305,7 @@ func Cleanup(ctx context.Context, cfg *config.Config, log *slog.Logger, purge bo
 	}
 	ctx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 	defer cancel()
-	spec, err := dataplaneSpec(cfg)
+	spec, err := dataplaneSpec(cfg, nil)
 	if err != nil {
 		return err
 	}
@@ -330,7 +370,9 @@ func httpCheckOptions(h config.HTTPCheck) linkmon.HTTPCheckOptions {
 	return o
 }
 
-func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
+// dataplaneSpec — правила ядра из конфига; ссылки на устройства — через
+// binder (nil — только ссылки по IP).
+func dataplaneSpec(cfg *config.Config, binder *deviceBinder) (dataplane.Spec, error) {
 	spec := dataplane.Spec{
 		LANInterface: cfg.LAN.Interface,
 	}
@@ -355,12 +397,13 @@ func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
 	}
 	var rules []dataplane.UserRule
 	for _, r := range cfg.Classify.Rules {
-		rules = append(rules, dataplane.UserRule{Name: r.Name, Class: r.Class, Devices: r.Devices, Match: r.Match})
+		rules = append(rules, dataplane.UserRule{Name: r.Name, Class: r.Class, ByDevice: len(r.Devices) > 0, Devices: binder.addrs(r.Devices), Match: r.Match})
 	}
 	spec.Classify = dataplane.CompileClassify(classes, policies, rules, cat)
 	for _, f := range cfg.Inbound.Forwards {
+		to, _ := binder.addr(f.To)
 		spec.Forwards = append(spec.Forwards, dataplane.PortForward{
-			Name: f.Name, Protos: f.Protos(), Ports: f.Port, To: f.To, ToPort: f.ToPort, Links: f.Links,
+			Name: f.Name, Protos: f.Protos(), Ports: f.Port, To: to, ToPort: f.ToPort, Links: f.Links,
 		})
 	}
 	g := cfg.Inbound.Guard
@@ -370,9 +413,10 @@ func dataplaneSpec(cfg *config.Config) (dataplane.Spec, error) {
 		if err != nil {
 			return spec, fmt.Errorf("dns.listen: %w", err)
 		}
-		spec.DNS = dataplane.DNSSpec{Listen: listen, Fallback: cfg.DNS.Fallback, Default: cfg.Devices.DefaultDNSMode, Devices: map[netip.Addr]model.DNSMode{}}
-		for _, d := range cfg.DNS.Devices {
-			spec.DNS.Devices[d.Address] = d.Mode
+		spec.DNS = dataplane.DNSSpec{Listen: listen, Fallback: cfg.DNS.Fallback, Default: cfg.Devices.DefaultDNSMode,
+			Devices: (&deviceBinder{cfg: cfg}).binding().DNS}
+		if binder != nil {
+			spec.DNS.Devices = binder.binding().DNS
 		}
 	}
 	if cfg.DPI.Enabled {

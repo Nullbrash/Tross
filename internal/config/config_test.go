@@ -354,7 +354,7 @@ func TestClassifySection(t *testing.T) {
   - { id: bulk, links: [isp1] }
 classify:
   rules:
-    - { name: pc-torrent, class: bulk, devices: [192.168.1.20], proto: tcp, ports: ["51413"] }
+    - { name: pc-torrent, class: bulk, devices: [192.168.1.20, "AA:BB:CC:00:11:22", dev-a6aabbccddee], proto: tcp, ports: ["51413"] }
   services:
     - { id: steam, disabled: true }
     - { id: myserver, parts: [{ id: mc, class: default, match: [{ proto: tcp, ports: ["25570"] }] }] }
@@ -363,13 +363,19 @@ classify:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := cfg.Classify.Rules[0]; r.Class != model.ClassBulk || len(r.Devices) != 1 || r.Ports[0].From != 51413 {
+	if r := cfg.Classify.Rules[0]; r.Class != model.ClassBulk || len(r.Devices) != 3 || r.Ports[0].From != 51413 {
 		t.Fatalf("rule = %+v", r)
+	}
+	// Ссылки на устройство: IP, MAC (запись — каноническая, строчными), id.
+	if d := cfg.Classify.Rules[0].Devices; d[0].Addr.String() != "192.168.1.20" || d[1].String() != "aa:bb:cc:00:11:22" || d[2].ID != "dev-a6aabbccddee" {
+		t.Errorf("device refs = %+v", d)
 	}
 	bad := map[string]string{
 		"unknown class":         "classify: { rules: [{ name: x, class: gaming, ports: ['1'] }] }\n",
 		"whole protocol":        "classify: { rules: [{ name: x, class: default, proto: tcp }] }\n",
 		"ipv6 device":           "classify: { rules: [{ name: x, class: default, devices: ['::1'], ports: ['1'] }] }\n",
+		"bad device ref":        "classify: { rules: [{ name: x, class: default, devices: [my-phone], ports: ['1'] }] }\n",
+		"multicast mac":         "classify: { rules: [{ name: x, class: default, devices: ['01:00:5e:00:00:01'], ports: ['1'] }] }\n",
 		"duplicate name":        "classify: { rules: [{ name: x, class: default, ports: ['1'] }, { name: x, class: default, ports: ['2'] }] }\n",
 		"service unknown class": "classify: { services: [{ id: s, parts: [{ id: p, class: gaming, match: [{ ports: ['1'] }] }] }] }\n",
 	}
@@ -386,13 +392,14 @@ func TestInboundSection(t *testing.T) {
     - { name: mc, port: 25565, to: 192.168.1.50, links: [isp1] }
     - { name: game, proto: both, port: "27015-27030", to: 192.168.1.51 }
     - { name: mc-lte, port: 25565, to: 192.168.1.50, to_port: 25570, links: [lte] }
+    - { name: console, proto: udp, port: 3074, to: "a6:00:00:00:00:01" }
 `
 	cfg, err := Parse([]byte(y))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f := cfg.Inbound.Forwards
-	if f[0].Proto != "tcp" || f[0].Port.From != 25565 || len(f[1].Protos()) != 2 || f[1].Port.To != 27030 || f[2].ToPort != 25570 {
+	if f[0].Proto != "tcp" || f[0].Port.From != 25565 || len(f[1].Protos()) != 2 || f[1].Port.To != 27030 || f[2].ToPort != 25570 || f[3].To.MAC.IsZero() {
 		t.Fatalf("forwards = %+v", f)
 	}
 	if g := cfg.Inbound.Guard; g.NewPerMinute != 20 || g.Burst != 20 || g.MaxConnections != 32 {
@@ -401,6 +408,8 @@ func TestInboundSection(t *testing.T) {
 	bad := map[string]string{
 		"outside LAN":     "inbound: { forwards: [{ name: x, port: 1, to: 10.0.0.5 }] }\n",
 		"no port":         "inbound: { forwards: [{ name: x, to: 192.168.1.5 }] }\n",
+		"no target":       "inbound: { forwards: [{ name: x, port: 1 }] }\n",
+		"bad target":      "inbound: { forwards: [{ name: x, port: 1, to: tv }] }\n",
 		"range to_port":   "inbound: { forwards: [{ name: x, port: '10-20', to: 192.168.1.5, to_port: 80 }] }\n",
 		"bad proto":       "inbound: { forwards: [{ name: x, proto: icmp, port: 1, to: 192.168.1.5 }] }\n",
 		"unknown link":    "inbound: { forwards: [{ name: x, port: 1, to: 192.168.1.5, links: [isp9] }] }\n",

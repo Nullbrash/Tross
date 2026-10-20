@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	coredevices "tross/core/devices"
 	"tross/core/model"
 	"tross/internal/config"
 	"tross/internal/control"
@@ -79,7 +80,7 @@ func TestDNSFillsSetsBeforeAnswer(t *testing.T) {
 func TestDNSRedirectAndFallback(t *testing.T) {
 	cfg := classCfg(t)
 	second := netip.MustParseAddr("192.168.77.11")
-	cfg.DNS.Devices = append(cfg.DNS.Devices, config.DNSDevice{Address: second, Mode: model.DNSExempt})
+	cfg.DNS.Devices = append(cfg.DNS.Devices, config.DNSDevice{Address: coredevices.Ref{Addr: second}, Mode: model.DNSExempt})
 	if out, err := inNS("tl-client", "ip addr add "+second.String()+"/24 dev eth0"); err != nil {
 		t.Fatalf("second device address: %v %s", err, out)
 	}

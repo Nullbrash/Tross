@@ -59,6 +59,39 @@ type SetElement struct {
 	Timeout time.Duration
 }
 
+// DeviceBinding — адреса устройств, на которые ссылаются правила: демон
+// меняет их при смене адреса устройства, остальное не трогается.
+type DeviceBinding struct {
+	// Rules — содержимое множеств устройств правил пользователя (DeviceSet).
+	Rules map[SetName][]netip.Addr
+	// DNS — режимы DNS устройств (замена DNSSpec.Devices).
+	DNS map[netip.Addr]model.DNSMode
+	// Forwards — адрес устройства проброса по имени; пустой адрес — проброс
+	// не действует. Пробросы без имени здесь не меняются.
+	Forwards map[string]netip.Addr
+}
+
+func validateBinding(b DeviceBinding) error {
+	for set, as := range b.Rules {
+		for _, a := range as {
+			if !a.Is4() {
+				return fmt.Errorf("dataplane: set %s: %s is not IPv4", set, a)
+			}
+		}
+	}
+	for a, m := range b.DNS {
+		if !a.Is4() || !m.Valid() {
+			return fmt.Errorf("dataplane: dns device %s: bad address or mode %q", a, m)
+		}
+	}
+	for name, a := range b.Forwards {
+		if a.IsValid() && !a.Is4() {
+			return fmt.Errorf("dataplane: forward %s: %s is not IPv4", name, a)
+		}
+	}
+	return nil
+}
+
 // DomainLinkSet — адреса доменов, чей канал выбран при DNS-запросе (DNS тем
 // же путём, что и трафик): цепочки классов соблюдают его после закреплений и
 // раньше долей. i — номер канала в Spec.Links.
@@ -85,6 +118,9 @@ type Dataplane interface {
 	// SetDNS переключает перехват DNS: up — резолвер демона отвечает; иначе
 	// запросы дома — запасному резолверу. Без DNSSpec — ничего.
 	SetDNS(ctx context.Context, up bool) error
+	// SetDevices ставит адреса устройств правил, режимы DNS устройств и
+	// адреса пробросов; меняется только то, что отличается от прежнего.
+	SetDevices(ctx context.Context, b DeviceBinding) error
 	// FlushConntrack сбрасывает соединения, закреплённые за упавшим каналом.
 	FlushConntrack(ctx context.Context, id model.LinkID) error
 	// RepairRoutes ставит заново маршруты таблиц каналов, если их нет или

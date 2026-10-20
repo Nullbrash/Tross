@@ -13,9 +13,12 @@ import (
 type Topic string
 
 const (
-	TopicDaemon      Topic = "daemon"
-	TopicLinkState   Topic = "link.state"
-	TopicDeviceNew   Topic = "device.new"
+	TopicDaemon    Topic = "daemon"
+	TopicLinkState Topic = "link.state"
+	TopicDeviceNew Topic = "device.new"
+	// TopicDeviceSame — новая запись похожа на пропавшую (смена случайного
+	// MAC): объединяет пользователь (данные — DeviceEvent).
+	TopicDeviceSame  Topic = "device.same"
 	TopicDNSWatchdog Topic = "dns.watchdog"
 	// TopicLinkRound — каждый раунд проб монитора (данные — LinkRound):
 	// живой сигнал для очередей CAKE; в журнал и историю не пишется.
@@ -33,7 +36,20 @@ const (
 // JournalTopics — темы, которые пишутся в журнал и историю событий:
 // всё, кроме частых служебных (раунды проб).
 func JournalTopics() []Topic {
-	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDNSWatchdog, TopicSQM, TopicDNSDebug, TopicDPI}
+	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDeviceSame, TopicDNSWatchdog, TopicSQM, TopicDNSDebug, TopicDPI}
+}
+
+// DeviceEvent — данные событий устройств: запись и, для device.same, на
+// какую запись она похожа и почему.
+type DeviceEvent struct {
+	ID      string           `json:"id"`
+	MAC     string           `json:"mac"`
+	Addr    string           `json:"addr,omitempty"`
+	Name    string           `json:"name,omitempty"`
+	Vendor  string           `json:"vendor,omitempty"`
+	Type    model.DeviceType `json:"type"`
+	SameAs  string           `json:"same_as,omitempty"`
+	Reasons []string         `json:"reasons,omitempty"`
 }
 
 // DPIEvent — данные события TopicDPI; Link пуст — движок целиком.

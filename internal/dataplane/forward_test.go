@@ -117,3 +117,23 @@ func TestInboundFilter(t *testing.T) {
 		t.Errorf("filter must not touch traffic from LAN:\n%s", nat)
 	}
 }
+
+// Устройство проброса ещё без адреса: DNAT нет (входящие отбросит фильтр),
+// пометка канала и защита остаются — адрес придёт через SetDevices.
+func TestForwardWithoutAddress(t *testing.T) {
+	spec := forwardSpec()
+	spec.Forwards[0].To = netip.Addr{}
+	if err := validateForwards(spec); err != nil {
+		t.Fatal(err)
+	}
+	nat := renderNAT(spec)
+	if strings.Contains(nat, "tcp dport 25565 dnat") || !strings.Contains(nat, "dnat ip to 192.168.10.51") {
+		t.Errorf("NAT:\n%s", nat)
+	}
+	if err := validateBinding(DeviceBinding{Forwards: map[string]netip.Addr{"mc": netip.MustParseAddr("::1")}}); err == nil {
+		t.Error("IPv6 forward target accepted")
+	}
+	if err := validateBinding(DeviceBinding{DNS: map[netip.Addr]model.DNSMode{netip.MustParseAddr("192.168.10.5"): "loud"}}); err == nil {
+		t.Error("bad dns mode accepted")
+	}
+}

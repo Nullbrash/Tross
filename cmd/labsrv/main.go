@@ -14,6 +14,10 @@
 //	labsrv tlsget -addr 203.0.113.10:443 -sni name.example -path /whoami
 //	    HTTPS-запрос по адресу с любым именем в SNI (сертификат не проверяется)
 //	labsrv life -duration 8h -devices 192.168.77.10,192.168.77.11 -out life.jsonl
+//	labsrv announce -dhcp -mac MAC -hostname NAME | -mdns NAME -addr IP | -ssdp SERVER
+//	    «устройство» рассказывает о себе (DHCP, mDNS, SSDP)
+//	labsrv mdnsd -name NAME -addr IP -duration 30s
+//	    ответ на запрос mDNS «имя по адресу»
 //
 // UDP-пинг имитирует игровой трафик: мелкие пакеты с постоянной частотой;
 // печатает RTT (мин/сред/макс), джиттер и потери.
@@ -43,7 +47,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: labsrv serve|udpping|upload|load|life|dns|dnsload|tlsget [flags]")
+		fmt.Fprintln(os.Stderr, "usage: labsrv serve|udpping|upload|load|life|dns|dnsload|tlsget|announce|mdnsd [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -64,6 +68,10 @@ func main() {
 		err = life(os.Args[2:])
 	case "load":
 		err = load(os.Args[2:])
+	case "announce":
+		err = announce(os.Args[2:])
+	case "mdnsd":
+		err = mdnsd(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}

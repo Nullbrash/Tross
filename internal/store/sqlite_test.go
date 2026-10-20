@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"path/filepath"
 	"testing"
 	"time"
@@ -75,6 +76,67 @@ func TestDevicesRoundTrip(t *testing.T) {
 	_ = s.DeleteDevice(ctx, "d1")
 	if got, _ := s.Devices(ctx); len(got) != 0 {
 		t.Fatalf("after delete = %+v", got)
+	}
+}
+
+func TestDeviceAddrs(t *testing.T) {
+	ctx := context.Background()
+	s := openMem(t)
+	t0 := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	m1, m2 := model.MAC{0xa6, 0, 0, 0, 0, 1}, model.MAC{0xa6, 0, 0, 0, 0, 2}
+	ip1, ip2 := netip.MustParseAddr("192.168.10.30"), netip.MustParseAddr("192.168.10.31")
+	if err := s.SaveDevices(ctx, []model.Device{{ID: "old", MACs: []model.MAC{m1}}, {ID: "new", MACs: []model.MAC{m2}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveDevices(ctx, []model.Device{{ID: "x"}, {}}); err == nil {
+		t.Fatal("empty id in a batch must be rejected")
+	}
+	if got, _ := s.Devices(ctx); len(got) != 2 {
+		t.Fatalf("failed batch must not be applied: %+v", got)
+	}
+	err := s.TouchDeviceAddrs(ctx, []DeviceAddr{
+		{Device: "old", MAC: m1, IP: ip1, First: t0, Last: t0.Add(time.Hour)},
+		{Device: "new", MAC: m2, IP: ip2, First: t0.Add(2 * time.Hour), Last: t0.Add(2 * time.Hour)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Повтор той же пары: first не позже, last не раньше.
+	if err := s.TouchDeviceAddrs(ctx, []DeviceAddr{{Device: "old", MAC: m1, IP: ip1, First: t0.Add(30 * time.Minute), Last: t0.Add(90 * time.Minute)}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.DeviceAddrs(ctx, "old")
+	if err != nil || len(got) != 1 || !got[0].First.Equal(t0) || !got[0].Last.Equal(t0.Add(90*time.Minute)) || got[0].MAC != m1 || got[0].IP != ip1 {
+		t.Fatalf("addrs = %+v, %v", got, err)
+	}
+
+	if err := s.MergeDevice(ctx, model.Device{ID: "old", Name: "Телефон", MACs: []model.MAC{m1, m2}}, "new"); err != nil {
+		t.Fatal(err)
+	}
+	devs, _ := s.Devices(ctx)
+	if len(devs) != 1 || devs[0].Name != "Телефон" || len(devs[0].MACs) != 2 {
+		t.Fatalf("after merge = %+v", devs)
+	}
+	got, _ = s.DeviceAddrs(ctx, "old")
+	if len(got) != 2 || got[0].IP != ip2 {
+		t.Fatalf("history after merge = %+v", got)
+	}
+
+	// Срок хранения истории — как у событий.
+	if err := s.Rollup(ctx, t0.Add(DefaultRetention().Events+100*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.DeviceAddrs(ctx, "old"); len(got) != 1 || got[0].IP != ip2 {
+		t.Fatalf("after prune = %+v", got)
+	}
+	if err := s.DeleteDevice(ctx, "old"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.DeviceAddrs(ctx, "old"); len(got) != 0 {
+		t.Fatalf("history of a forgotten device = %+v", got)
+	}
+	if err := s.TouchDeviceAddrs(ctx, []DeviceAddr{{Device: "old", MAC: m1}}); err == nil {
+		t.Fatal("address without IP must be rejected")
 	}
 }
 

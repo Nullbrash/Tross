@@ -42,13 +42,16 @@ const btHandshake = "@ih,0,96 0x13426974546f7272656e7420"
 
 // ClassRule — одно правило классификации в ядре: все заданные поля (И).
 type ClassRule struct {
-	Name      string
-	Class     model.TrafficClass
-	Service   string // непусто — сервис с закреплением «устройство + сервис»
-	Proto     model.Protocol
-	Ports     []profile.PortRange
-	Networks  []netip.Prefix
-	Sources   []netip.Addr
+	Name     string
+	Class    model.TrafficClass
+	Service  string // непусто — сервис с закреплением «устройство + сервис»
+	Proto    model.Protocol
+	Ports    []profile.PortRange
+	Networks []netip.Prefix
+	Sources  []netip.Addr
+	// SourceSet — множество адресов устройств правила (обновляет демон при
+	// смене адреса устройства, SetDevices); Sources — его начальное содержимое.
+	SourceSet SetName
 	DomainSet SetName // адреса доменов (наполняет резолвер)
 	// Domains — домены множества правила пользователя или части профиля
 	// (у множеств списков домены — в списках).
@@ -75,13 +78,20 @@ type Classify struct {
 	Services []string // сервисы с закреплением, по порядку
 }
 
-// UserRule — правило пользователя из конфига.
+// UserRule — правило пользователя из конфига. С устройствами (ByDevice или
+// непустые Devices) правило — только для них: адреса — в множестве
+// (DeviceSet), пустое множество не совпадает ни с чем; Devices — адреса,
+// известные при Setup.
 type UserRule struct {
-	Name    string
-	Class   model.TrafficClass
-	Devices []netip.Addr
-	Match   profile.Match
+	Name     string
+	Class    model.TrafficClass
+	ByDevice bool
+	Devices  []netip.Addr
+	Match    profile.Match
 }
+
+// DeviceSet — множество адресов устройств i-го правила пользователя.
+func DeviceSet(i int) SetName { return SetName(fmt.Sprintf("tross_ud%d", i)) }
 
 // CompileClassify строит правила ядра в порядке классификатора
 // (core/classify): правила пользователя → ручные доменные списки → профили
@@ -100,7 +110,9 @@ func CompileClassify(classes []model.TrafficClass, policies map[model.TrafficCla
 	}
 	for i, u := range user {
 		r := ruleFromMatch(u.Name, known(u.Class), "", u.Match)
-		r.Sources = u.Devices
+		if u.ByDevice || len(u.Devices) > 0 {
+			r.SourceSet, r.Sources = DeviceSet(i), u.Devices
+		}
 		if len(u.Match.Domains) > 0 {
 			r.DomainSet, r.Domains = SetName(fmt.Sprintf("tross_du%d", i)), u.Match.Domains
 		}
@@ -258,6 +270,17 @@ func (c Classify) classID(cl model.TrafficClass) uint32 {
 }
 
 // domainSets — множества адресов доменов (без множества пиров BitTorrent).
+// deviceSets — множества устройств правил пользователя.
+func (c Classify) deviceSets() []SetName {
+	var out []SetName
+	for _, r := range c.Rules {
+		if r.SourceSet != "" {
+			out = append(out, r.SourceSet)
+		}
+	}
+	return out
+}
+
 func (c Classify) domainSets() []SetName {
 	var out []SetName
 	for _, r := range c.Rules {
@@ -287,6 +310,16 @@ func renderClassifySets(c Classify, links []LinkSpec) string {
 	var b strings.Builder
 	for _, s := range c.domainSets() {
 		fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t}\n", s)
+	}
+	for _, r := range c.Rules {
+		if r.SourceSet == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n", r.SourceSet)
+		if len(r.Sources) > 0 {
+			fmt.Fprintf(&b, "\t\telements = { %s }\n", joinAddrs(r.Sources))
+		}
+		b.WriteString("\t}\n")
 	}
 	for i := range links {
 		fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tflags timeout\n\t}\n", DomainLinkSet(i))
@@ -369,7 +402,9 @@ func renderBTGuard(c Classify, links []LinkSpec, lan string) string {
 
 func matchExpr(r ClassRule) string {
 	var parts []string
-	if len(r.Sources) > 0 {
+	if r.SourceSet != "" {
+		parts = append(parts, "ip saddr @"+string(r.SourceSet))
+	} else if len(r.Sources) > 0 {
 		parts = append(parts, "ip saddr "+setOf(r.Sources, func(a netip.Addr) string { return a.String() }))
 	}
 	if r.DomainSet == setBTPeers {
@@ -401,6 +436,14 @@ func matchExpr(r ClassRule) string {
 		parts = append(parts, e)
 	}
 	return strings.Join(parts, " ")
+}
+
+func joinAddrs(as []netip.Addr) string {
+	s := make([]string, len(as))
+	for i, a := range as {
+		s[i] = a.String()
+	}
+	return strings.Join(s, ", ")
 }
 
 func setOf[T any](v []T, f func(T) string) string {

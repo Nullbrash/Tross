@@ -17,7 +17,10 @@ type PortForward struct {
 	Name   string
 	Protos []model.Protocol
 	Ports  profile.PortRange
-	To     netip.Addr
+	// To — адрес устройства; пуст — устройство пока без адреса: проброс не
+	// действует (входящие на порт отбрасываются фильтром), пока адрес не
+	// придёт через SetDevices.
+	To netip.Addr
 	// ToPort — порт на устройстве; 0 — тот же, что снаружи (для диапазона — только так).
 	ToPort uint16
 	// Links — каналы, на которых открыт проброс; пусто — все.
@@ -43,7 +46,7 @@ const (
 func validateForwards(spec Spec) error {
 	var errs []error
 	for _, f := range spec.Forwards {
-		if !f.To.Is4() {
+		if f.To.IsValid() && !f.To.Is4() {
 			errs = append(errs, fmt.Errorf("forward %s: target %s is not IPv4", f.Name, f.To))
 		}
 		if f.Ports.From == 0 || f.Ports.To < f.Ports.From {
@@ -141,6 +144,9 @@ func renderForwardNAT(spec Spec) string {
 	b.WriteString("\t}\n")
 	b.WriteString("\tchain prerouting {\n\t\ttype nat hook prerouting priority dstnat; policy accept;\n")
 	for _, f := range spec.Forwards {
+		if !f.To.IsValid() {
+			continue
+		}
 		to := f.To.String()
 		if f.ToPort != 0 {
 			to = netip.AddrPortFrom(f.To, f.ToPort).String()

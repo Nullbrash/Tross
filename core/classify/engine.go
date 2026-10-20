@@ -25,6 +25,9 @@ type Config struct {
 	Rules   []Rule
 	Catalog profile.Catalog
 	Domains DomainLookup // nil — без списков
+	// Refs — все имена устройства-источника (адрес, id, MAC — как их пишут
+	// Rule.Devices); nil — только Flow.Key.
+	Refs func(model.Flow) []string
 }
 
 // Engine — классификатор. Порядок: правила пользователя → ручные доменные
@@ -54,8 +57,15 @@ func New(cfg Config) (*Engine, error) {
 }
 
 func (e *Engine) Classify(f model.Flow) model.Classification {
+	var refs []string
 	for _, r := range e.cfg.Rules {
-		if (len(r.Devices) == 0 || slices.Contains(r.Devices, f.Key())) && r.Match.Matches(f) {
+		if len(r.Devices) > 0 && refs == nil {
+			refs = []string{f.Key()}
+			if e.cfg.Refs != nil {
+				refs = append(refs, e.cfg.Refs(f)...)
+			}
+		}
+		if (len(r.Devices) == 0 || slices.ContainsFunc(r.Devices, func(d string) bool { return slices.Contains(refs, d) })) && r.Match.Matches(f) {
 			return model.Classification{Class: r.Class, Confidence: 1, Source: "rule:" + r.Name}
 		}
 	}

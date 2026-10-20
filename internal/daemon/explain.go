@@ -39,7 +39,7 @@ func newExplainer(cfg *config.Config, cls *classify.Engine, bal *balancer, dp da
 
 // newClassifier — тот же классификатор, по которому собраны правила ядра:
 // им объясняются решения и выбирается канал домена при DNS-запросе.
-func newClassifier(cfg *config.Config, cat profile.Catalog, domainRules *corelists.Rules) (*classify.Engine, error) {
+func newClassifier(cfg *config.Config, cat profile.Catalog, domainRules *corelists.Rules, refs func(model.Flow) []string) (*classify.Engine, error) {
 	var rules []classify.Rule
 	for _, r := range cfg.Classify.Rules {
 		var devs []string
@@ -52,7 +52,7 @@ func newClassifier(cfg *config.Config, cat profile.Catalog, domainRules *corelis
 	if domainRules != nil {
 		domains = listload.ClassRule(domainRules)
 	}
-	return classify.New(classify.Config{Rules: rules, Catalog: cat, Domains: domains})
+	return classify.New(classify.Config{Rules: rules, Catalog: cat, Domains: domains, Refs: refs})
 }
 
 func (x *explainer) explain(ctx context.Context, f model.Flow) (api.Explanation, error) {

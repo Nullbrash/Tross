@@ -36,7 +36,9 @@ type Options struct {
 	// DNS — резолвер дома; nil — не запущен (сухой режим).
 	DNS func(ctx context.Context) DNSStatus
 	// Lists — списки и ручные правила; nil — недоступно.
-	Lists           Lists
+	Lists Lists
+	// Devices — реестр устройств; nil — недоступен.
+	Devices         Devices
 	AllowedNetworks []netip.Prefix
 	Version         string
 	DryRun          bool
@@ -66,6 +68,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/lists/refresh", s.handleListsRefresh)
 	mux.HandleFunc("POST /api/lists/manual", s.handleManualAdd)
 	mux.HandleFunc("DELETE /api/lists/manual", s.handleManualDelete)
+	mux.HandleFunc("GET /api/devices", s.handleDevices)
+	mux.HandleFunc("GET /api/devices/{id}", s.handleDevice)
+	mux.HandleFunc("PATCH /api/devices/{id}", s.handleDeviceUpdate)
+	mux.HandleFunc("POST /api/devices/{id}/merge", s.handleDeviceMerge)
+	mux.HandleFunc("POST /api/devices/{id}/dismiss", s.handleDeviceDismiss)
+	mux.HandleFunc("DELETE /api/devices/{id}", s.handleDeviceForget)
 	// С методом GET: иначе этот шаблон перехватил бы POST /api/health вместо ответа 405.
 	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})

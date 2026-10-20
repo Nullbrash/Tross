@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 )
 
@@ -85,26 +86,63 @@ func (m DNSMode) Valid() bool {
 	return m == DNSObserve || m == DNSRedirect || m == DNSBlock || m == DNSExempt
 }
 
+// UPnPLevel — может ли устройство само открывать порты (UPnP IGD,
+// NAT-PMP, PCP). Пустое — по профилю типа.
+type UPnPLevel string
+
+const (
+	UPnPDeny  UPnPLevel = "deny"
+	UPnPAsk   UPnPLevel = "ask"
+	UPnPAllow UPnPLevel = "allow"
+)
+
+func (l UPnPLevel) Valid() bool { return l == UPnPDeny || l == UPnPAsk || l == UPnPAllow }
+
 // DeviceHints — подсказки для автоматического определения имени и типа.
 type DeviceHints struct {
 	DHCPHostname string `json:"dhcp_hostname,omitempty"`
-	Vendor       string `json:"vendor,omitempty"`
-	MDNSName     string `json:"mdns_name,omitempty"`
-	SSDPServer   string `json:"ssdp_server,omitempty"`
+	// DHCPClientID — опция 61 в hex; DHCPVendorClass — опция 60;
+	// DHCPParams — список запрошенных опций (55) через запятую: отпечаток ОС.
+	DHCPClientID    string `json:"dhcp_client_id,omitempty"`
+	DHCPVendorClass string `json:"dhcp_vendor_class,omitempty"`
+	DHCPParams      string `json:"dhcp_params,omitempty"`
+	Vendor          string `json:"vendor,omitempty"`
+	MDNSName        string `json:"mdns_name,omitempty"`
+	// MDNSModel — модель из записи _device-info (например, MacBookPro18,3).
+	MDNSModel  string `json:"mdns_model,omitempty"`
+	SSDPServer string `json:"ssdp_server,omitempty"`
+}
+
+// SameAs — предположение «эта запись — то же устройство, что ID» (смена
+// случайного MAC). Объединяет только пользователь.
+type SameAs struct {
+	ID      string   `json:"id"`
+	Reasons []string `json:"reasons"`
 }
 
 // Device — запись реестра клиентов. Несколько MAC — результат объединения записей
 // (например, после смены случайного адреса).
 type Device struct {
-	ID        string      `json:"id"`
-	MACs      []MAC       `json:"macs"`
-	Name      string      `json:"name"`
-	Type      DeviceType  `json:"type"`
-	Note      string      `json:"note,omitempty"`
-	Hints     DeviceHints `json:"hints"`
-	DNSMode   DNSMode     `json:"dns_mode"`
-	FirstSeen time.Time   `json:"first_seen"`
-	LastSeen  time.Time   `json:"last_seen"`
+	ID   string     `json:"id"`
+	MACs []MAC      `json:"macs"`
+	Name string     `json:"name"`
+	Type DeviceType `json:"type"`
+	// TypeConfirmed — тип задал пользователь; угаданный тип не ослабляет
+	// ограничений профиля.
+	TypeConfirmed bool        `json:"type_confirmed,omitempty"`
+	Note          string      `json:"note,omitempty"`
+	Hints         DeviceHints `json:"hints"`
+	DNSMode       DNSMode     `json:"dns_mode,omitempty"`
+	UPnP          UPnPLevel   `json:"upnp,omitempty"`
+	// Addr — последний известный IPv4 в LAN.
+	Addr netip.Addr `json:"addr,omitzero"`
+	// Aliases — id записей, влитых в эту: ссылки на них в конфиге остаются
+	// в силе.
+	Aliases   []string  `json:"aliases,omitempty"`
+	MaybeSame *SameAs   `json:"maybe_same,omitempty"`
+	NotSame   []string  `json:"not_same,omitempty"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
 }
 
 // HasRandomMAC — есть ли у устройства хотя бы один случайный MAC.

@@ -6,6 +6,7 @@ package store
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"time"
 
 	coredpi "tross/core/dpi"
@@ -118,8 +119,12 @@ func DefaultRetention() Retention {
 
 type Store interface {
 	SaveDevice(ctx context.Context, d model.Device) error
+	SaveDevices(ctx context.Context, ds []model.Device) error
 	DeleteDevice(ctx context.Context, id string) error
 	Devices(ctx context.Context) ([]model.Device, error)
+	MergeDevice(ctx context.Context, dst model.Device, srcID string) error
+	TouchDeviceAddrs(ctx context.Context, as []DeviceAddr) error
+	DeviceAddrs(ctx context.Context, device string) ([]DeviceAddr, error)
 
 	SaveRule(ctx context.Context, r model.DomainRule) error
 	DeleteRule(ctx context.Context, k RuleKey) error
@@ -159,6 +164,15 @@ type Store interface {
 	// SizeBytes — размер файла базы (0 для базы в памяти).
 	SizeBytes() int64
 	Close() error
+}
+
+// DeviceAddr — адрес устройства в LAN (пара MAC + IP) и когда он был.
+type DeviceAddr struct {
+	Device string     `json:"device"`
+	MAC    model.MAC  `json:"mac"`
+	IP     netip.Addr `json:"ip"`
+	First  time.Time  `json:"first"`
+	Last   time.Time  `json:"last"`
 }
 
 // DPIVerdict — решение по домену (ключ — шаблон правила списка, под

@@ -306,8 +306,8 @@ func (c *Config) validateClassify(p *problems) {
 			p.add(f, "%v", err)
 		}
 		for _, d := range r.Devices {
-			if !d.Is4() {
-				p.add(f+".devices", "%s: only IPv4 is supported", d)
+			if d.IsZero() {
+				p.add(f+".devices", "empty device")
 			}
 		}
 	}
@@ -393,16 +393,16 @@ func (c *Config) validateDNS(p *problems) {
 			p.add("dns.hosts", "%s: %s is not an IPv4 address", name, a)
 		}
 	}
-	seenDev := map[netip.Addr]bool{}
+	seenDev := map[string]bool{}
 	for i, dev := range d.Devices {
 		f := fmt.Sprintf("dns.devices[%d]", i)
-		if !dev.Address.Is4() {
-			p.add(f+".address", "%s: want an IPv4 address", dev.Address)
+		if dev.Address.IsZero() {
+			p.add(f+".address", "required: an IPv4 address, a MAC or a device id")
 		}
-		if seenDev[dev.Address] {
+		if seenDev[dev.Address.String()] {
 			p.add(f+".address", "duplicate %s", dev.Address)
 		}
-		seenDev[dev.Address] = true
+		seenDev[dev.Address.String()] = true
 		if !dev.Mode.Valid() {
 			p.add(f+".mode", "want observe, redirect, block or exempt, got %q", dev.Mode)
 		}

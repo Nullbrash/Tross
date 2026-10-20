@@ -21,6 +21,7 @@ type Fake struct {
 	pins    []Pin
 	shaping map[model.LinkID]Shaping
 	elems   []SetElement
+	binding DeviceBinding
 }
 
 var _ Dataplane = (*Fake)(nil)
@@ -96,6 +97,24 @@ func (f *Fake) Elements() []SetElement {
 func (f *Fake) SetDNS(_ context.Context, up bool) error {
 	f.record("set-dns", up)
 	return nil
+}
+
+func (f *Fake) SetDevices(_ context.Context, b DeviceBinding) error {
+	if err := validateBinding(b); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.binding = b
+	f.mu.Unlock()
+	f.record("set-devices", len(b.Rules), len(b.DNS), len(b.Forwards))
+	return nil
+}
+
+// Binding — последняя привязка устройств (для тестов).
+func (f *Fake) Binding() DeviceBinding {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.binding
 }
 
 // RepairRoutes в «сухом» режиме чинить нечего; не записывается — вызывается

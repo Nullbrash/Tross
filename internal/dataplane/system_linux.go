@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,9 @@ type System struct {
 	routed  map[model.LinkID]bool // маршрут по умолчанию в таблице канала поставлен
 	shaping map[model.LinkID]Shaping
 	prevSVM string // src_valid_mark до Setup — вернуть при Teardown
+	dnsUp   bool   // перехват DNS — на резолвер демона (SetDNS)
+	// devSets — содержимое множеств устройств правил, как оно стоит в ядре.
+	devSets map[SetName][]netip.Addr
 }
 
 var _ Dataplane = (*System)(nil)
@@ -101,6 +105,13 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	// До первого плана — каждому классу первый разрешённый канал по приоритету.
 	c := spec.Classify.withDefault()
 	s.plan = initialPlan(c, spec.Links, s.routed)
+	s.dnsUp = false
+	s.devSets = map[SetName][]netip.Addr{}
+	for _, r := range spec.Classify.Rules {
+		if r.SourceSet != "" {
+			s.devSets[r.SourceSet] = slices.Clone(r.Sources)
+		}
+	}
 	// Перехват DNS — пока на запасной резолвер: резолвер демона ещё не
 	// слушает, на него переключит SetDNS.
 	if err := runNft(ctx, renderNAT(spec)+renderDNS(spec, false)+renderBase(spec)+renderPlan(c, spec.Links, s.plan)); err != nil {
