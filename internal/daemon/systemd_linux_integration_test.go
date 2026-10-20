@@ -90,6 +90,7 @@ ExecStart=
 ExecStart=%[1]s -config %[2]s -data-dir /var/lib/tross-itest
 ExecStopPost=
 ExecStopPost=%[1]s -config %[2]s -cleanup
+ExecStartPre=
 StateDirectory=tross-itest
 ReadWritePaths=
 ReadWritePaths=/var/lib/tross-itest
@@ -122,6 +123,12 @@ func startUnit(t *testing.T) {
 		out, err := exec.Command("wget", "-q", "-T", "2", "-O", "-", "http://192.168.77.1:8080/api/links").Output()
 		return err == nil && strings.Count(string(out), `"state":"up"`) == 3
 	})
+	// Песочница службы не мешает источникам реестра (сырой сокет DHCP —
+	// AF_PACKET, соседи — netlink, группы multicast).
+	out, _ := exec.Command("journalctl", "-u", itestUnit, "-o", "cat", "--since", "@"+strconv.FormatInt(began.Unix(), 10)).Output()
+	if strings.Contains(string(out), "source stopped") || strings.Contains(string(out), "LAN sources not started") {
+		t.Errorf("device sources failed under the unit:\n%s", out)
+	}
 }
 
 // withMainDefault — маршрут по умолчанию в основной таблице, как у системы

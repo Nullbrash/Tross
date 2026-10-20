@@ -18,7 +18,10 @@ const (
 	TopicDeviceNew Topic = "device.new"
 	// TopicDeviceSame — новая запись похожа на пропавшую (смена случайного
 	// MAC): объединяет пользователь (данные — DeviceEvent).
-	TopicDeviceSame  Topic = "device.same"
+	TopicDeviceSame Topic = "device.same"
+	// TopicDHCP — раздача адресов: второй DHCP-сервер в LAN (данные —
+	// DHCPEvent).
+	TopicDHCP        Topic = "dhcp"
 	TopicDNSWatchdog Topic = "dns.watchdog"
 	// TopicLinkRound — каждый раунд проб монитора (данные — LinkRound):
 	// живой сигнал для очередей CAKE; в журнал и историю не пишется.
@@ -36,7 +39,14 @@ const (
 // JournalTopics — темы, которые пишутся в журнал и историю событий:
 // всё, кроме частых служебных (раунды проб).
 func JournalTopics() []Topic {
-	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDeviceSame, TopicDNSWatchdog, TopicSQM, TopicDNSDebug, TopicDPI}
+	return []Topic{TopicDaemon, TopicLinkState, TopicDeviceNew, TopicDeviceSame, TopicDHCP, TopicDNSWatchdog, TopicSQM, TopicDNSDebug, TopicDPI}
+}
+
+// DHCPEvent — данные события TopicDHCP.
+type DHCPEvent struct {
+	Msg    string `json:"msg"`
+	Server string `json:"server,omitempty"`
+	MAC    string `json:"mac,omitempty"`
 }
 
 // DeviceEvent — данные событий устройств: запись и, для device.same, на

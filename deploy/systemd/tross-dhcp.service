@@ -1,0 +1,33 @@
+# Раздача адресов в LAN для Tross (lan.dhcp.enabled): dnsmasq отдельной
+# службой — не зависит от trossd и раздаёт адреса, даже когда демона нет.
+# Конфиг и закреплённые адреса пишет trossd в /var/lib/tross-dhcp и сам
+# (пере)запускает эту службу. Установка:
+#   apt install dnsmasq-base     # без пакета dnsmasq: тот ставит свою службу DNS
+#   install -m 0644 deploy/systemd/tross-dhcp.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable tross-dhcp
+# Раздачу адресов в роутере — выключить: два раздающих в одной сети
+# конфликтуют (Tross предупреждает в журнале и в /api/dhcp).
+
+[Unit]
+Description=Tross DHCP (dnsmasq): addresses in the home network
+Documentation=https://github.com/Nullbrash/Tross
+After=network.target
+# Конфига ещё нет — trossd создаст его и запустит службу.
+ConditionPathExists=/var/lib/tross-dhcp/dnsmasq.conf
+
+[Service]
+Type=simple
+ExecStartPre=/usr/sbin/dnsmasq --test --conf-file=/var/lib/tross-dhcp/dnsmasq.conf
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/var/lib/tross-dhcp/dnsmasq.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+# dnsmasq перечитывает закреплённые адреса, уже сбросив права root: каталог
+# и файлы — на чтение всем.
+StateDirectory=tross-dhcp
+StateDirectoryMode=0755
+RuntimeDirectory=tross-dhcp
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

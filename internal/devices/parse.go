@@ -37,10 +37,15 @@ func clean(s string) string {
 // Типы сообщений DHCP (опция 53).
 const (
 	dhcpDiscover = 1
+	dhcpOffer    = 2
 	dhcpRequest  = 3
 	dhcpAck      = 5
 	dhcpInform   = 8
 )
+
+// ProbeMAC — chaddr пробного запроса Tross (поиск чужого DHCP-сервера):
+// локальный адрес «TROSS»; в реестр не попадает.
+var ProbeMAC = model.MAC{0x02, 0x54, 0x52, 0x4f, 0x53, 0x53}
 
 // DHCPInfo — разобранное сообщение DHCP.
 type DHCPInfo struct {
@@ -48,8 +53,14 @@ type DHCPInfo struct {
 	MAC    model.MAC
 	CIAddr netip.Addr
 	YIAddr netip.Addr
-	Hints  model.DeviceHints
+	// ServerID — опция 54: какой сервер ответил (у предложения и
+	// подтверждения).
+	ServerID netip.Addr
+	Hints    model.DeviceHints
 }
+
+// FromServer — ответ сервера (предложение или подтверждение).
+func (d DHCPInfo) FromServer() bool { return d.Type == dhcpOffer || d.Type == dhcpAck }
 
 var errNotDHCP = errors.New("devices: not a DHCP message")
 
@@ -81,6 +92,10 @@ func ParseDHCP(b []byte) (DHCPInfo, error) {
 			if len(v) == 1 {
 				d.Type = v[0]
 			}
+		case 54:
+			if len(v) == 4 {
+				d.ServerID = netip.AddrFrom4([4]byte(v))
+			}
 		case 12:
 			d.Hints.DHCPHostname = clean(string(v))
 		case 60:
@@ -107,7 +122,7 @@ func ParseDHCP(b []byte) (DHCPInfo, error) {
 // Observation — наблюдение по сообщению: запросы клиента дают подсказки (и
 // адрес, если клиент его уже держит), подтверждение сервера — выданный адрес.
 func (d DHCPInfo) Observation(at time.Time) (Observation, bool) {
-	if d.MAC.IsZero() || d.MAC.IsMulticast() {
+	if d.MAC.IsZero() || d.MAC.IsMulticast() || d.MAC == ProbeMAC {
 		return Observation{}, false
 	}
 	o := Observation{MAC: d.MAC, At: at}
@@ -130,6 +145,42 @@ func (d DHCPInfo) Observation(at time.Time) (Observation, bool) {
 		return Observation{}, false
 	}
 	return o, true
+}
+
+// Discover — пробный DHCPDISCOVER (данные UDP) от ProbeMAC: ответ
+// широковещательно, так его увидит прослушивание.
+func Discover(xid uint32) []byte {
+	b := make([]byte, 240, 260)
+	b[0], b[1], b[2] = 1, 1, 6
+	binary.BigEndian.PutUint32(b[4:8], xid)
+	binary.BigEndian.PutUint16(b[10:12], 0x8000)
+	copy(b[28:34], ProbeMAC[:])
+	binary.BigEndian.PutUint32(b[236:240], 0x63825363)
+	return append(b, 53, 1, dhcpDiscover, 55, 3, 1, 3, 6, 255)
+}
+
+// IPv4UDP — датаграм с IP- и UDP-заголовками (для сокета пакетного уровня);
+// контрольная сумма UDP — 0 (разрешено для IPv4).
+func IPv4UDP(src, dst netip.Addr, sport, dport uint16, payload []byte) []byte {
+	p := make([]byte, 28+len(payload))
+	p[0], p[8], p[9] = 0x45, 64, 17
+	binary.BigEndian.PutUint16(p[2:4], uint16(len(p)))
+	s, d := src.As4(), dst.As4()
+	copy(p[12:16], s[:])
+	copy(p[16:20], d[:])
+	var sum uint32
+	for i := 0; i < 20; i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(p[i : i+2]))
+	}
+	for sum>>16 != 0 {
+		sum = sum&0xffff + sum>>16
+	}
+	binary.BigEndian.PutUint16(p[10:12], ^uint16(sum))
+	binary.BigEndian.PutUint16(p[20:22], sport)
+	binary.BigEndian.PutUint16(p[22:24], dport)
+	binary.BigEndian.PutUint16(p[24:26], uint16(8+len(payload)))
+	copy(p[28:], payload)
+	return p
 }
 
 // ParseMDNS — подсказки об устройстве src из ответа mDNS: имя (запись A с

@@ -163,9 +163,12 @@ func (s *Sources) neigh(u netlink.NeighUpdate) {
 	}
 }
 
-// dhcpFilter — только UDP на порты 67 и 68, без фрагментов (смещения — от
-// IP-заголовка: сокет SOCK_DGRAM).
+// dhcpFilter — только IPv4 UDP на порты 67 и 68, без фрагментов (смещения —
+// от IP-заголовка: сокет SOCK_DGRAM). Протокол кадра — из метаданных пакета:
+// сокет слушает все протоколы, иначе ядро не отдало бы исходящие.
 var dhcpFilter = []bpf.Instruction{
+	bpf.LoadExtension{Num: bpf.ExtProto},
+	bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.ETH_P_IP, SkipFalse: 9},
 	bpf.LoadAbsolute{Off: 9, Size: 1},
 	bpf.JumpIf{Cond: bpf.JumpEqual, Val: unix.IPPROTO_UDP, SkipFalse: 7},
 	bpf.LoadAbsolute{Off: 6, Size: 2},
@@ -182,9 +185,10 @@ func htons(v uint16) uint16 { return v<<8 | v>>8 }
 
 // runDHCP — копии всех сообщений DHCP на LAN (и запросов клиентов, и
 // подтверждений сервера), кто бы ни раздавал адреса: сокет пакетного уровня
-// не мешает серверу на порту 67.
+// не мешает серверу на порту 67. ETH_P_ALL — исходящие (ответы dnsmasq на
+// самом мини-ПК) ядро отдаёт только таким сокетам.
 func (s *Sources) runDHCP(ctx context.Context) error {
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, int(htons(unix.ETH_P_IP)))
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, int(htons(unix.ETH_P_ALL)))
 	if err != nil {
 		return fmt.Errorf("packet socket: %w", err)
 	}
@@ -200,7 +204,7 @@ func (s *Sources) runDHCP(ctx context.Context) error {
 	if err := unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, &unix.SockFprog{Len: uint16(len(raw)), Filter: &raw[0]}); err != nil {
 		return fmt.Errorf("attach filter: %w", err)
 	}
-	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: htons(unix.ETH_P_IP), Ifindex: s.ifc.Index}); err != nil {
+	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: htons(unix.ETH_P_ALL), Ifindex: s.ifc.Index}); err != nil {
 		return fmt.Errorf("bind: %w", err)
 	}
 	// Таймаут чтения — чтобы заметить отмену ctx.
@@ -209,38 +213,62 @@ func (s *Sources) runDHCP(ctx context.Context) error {
 	}
 	buf := make([]byte, 2048)
 	for ctx.Err() == nil {
-		n, _, err := unix.Recvfrom(fd, buf, 0)
+		n, from, err := unix.Recvfrom(fd, buf, 0)
 		if err != nil {
 			if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EINTR) {
 				continue
 			}
 			return err
 		}
-		if o, ok := dhcpObservation(buf[:n], time.Now()); ok {
+		ll, _ := from.(*unix.SockaddrLinklayer)
+		if ll == nil || ll.Protocol != htons(unix.ETH_P_IP) {
+			continue
+		}
+		d, ok := dhcpMessage(buf[:n])
+		if !ok {
+			continue
+		}
+		if o, ok := d.Observation(time.Now()); ok {
 			s.opts.Observe(o)
+		}
+		if d.FromServer() && d.ServerID.IsValid() && s.opts.OnServer != nil && ll.Halen == 6 {
+			var mac model.MAC
+			copy(mac[:], ll.Addr[:6])
+			s.opts.OnServer(d.ServerID, mac)
 		}
 	}
 	return nil
 }
 
-// dhcpObservation — наблюдение по IP-пакету с сообщением DHCP. Фильтр ядра
-// ещё не стоял, пока сокет открывался, — порты проверяются и здесь.
-func dhcpObservation(p []byte, at time.Time) (Observation, bool) {
+// dhcpMessage — сообщение DHCP из IP-пакета. Фильтр ядра ещё не стоял,
+// пока сокет открывался, — порты проверяются и здесь.
+func dhcpMessage(p []byte) (DHCPInfo, bool) {
 	if len(p) < 20 || p[0]>>4 != 4 || p[9] != unix.IPPROTO_UDP {
-		return Observation{}, false
+		return DHCPInfo{}, false
 	}
 	ihl := int(p[0]&0x0f) * 4
 	if ihl < 20 || len(p) < ihl+8 {
-		return Observation{}, false
+		return DHCPInfo{}, false
 	}
 	if dport := uint16(p[ihl+2])<<8 | uint16(p[ihl+3]); dport != 67 && dport != 68 {
-		return Observation{}, false
+		return DHCPInfo{}, false
 	}
 	d, err := ParseDHCP(p[ihl+8:])
+	return d, err == nil
+}
+
+// ProbeDHCP — пробный широковещательный запрос DHCP на LAN: ответы всех
+// серверов увидит прослушивание (OnServer). Через сокет пакетного уровня —
+// порт 68 может держать клиент DHCP самой машины.
+func (s *Sources) ProbeDHCP() error {
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, int(htons(unix.ETH_P_IP)))
 	if err != nil {
-		return Observation{}, false
+		return err
 	}
-	return d.Observation(at)
+	defer unix.Close(fd)
+	pkt := IPv4UDP(netip.IPv4Unspecified(), netip.AddrFrom4([4]byte{255, 255, 255, 255}), 68, 67, Discover(rand.Uint32()))
+	to := &unix.SockaddrLinklayer{Protocol: htons(unix.ETH_P_IP), Ifindex: s.ifc.Index, Halen: 6, Addr: [8]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}}
+	return unix.Sendto(fd, pkt, 0, to)
 }
 
 // multicast — сокет группы на интерфейсе LAN. SO_REUSEADDR и SO_REUSEPORT —

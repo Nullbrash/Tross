@@ -1,6 +1,7 @@
 # Служба trossd для мини-ПК. Установка:
 #   install -m 0755 bin/linux-amd64/trossd /usr/local/bin/trossd
 #   install -m 0644 deploy/systemd/trossd.service /etc/systemd/system/
+#   (раздача адресов — ещё deploy/systemd/tross-dhcp.service)
 #   systemctl daemon-reload && systemctl enable --now trossd
 #
 # Без демона сеть работает через основную таблицу маршрутизации (маршрут по
@@ -50,8 +51,12 @@ StateDirectoryMode=0750
 # Сокет команд root (`trossd debug …`): каталог только для root.
 RuntimeDirectory=tross
 RuntimeDirectoryMode=0700
-ReadWritePaths=/var/lib/tross
-RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+# Раздача адресов (lan.dhcp): конфиг dnsmasq — в своём каталоге, доступном
+# на чтение всем (dnsmasq читает его без root); создаётся до запуска.
+ExecStartPre=+/usr/bin/install -d -m 0755 /var/lib/tross-dhcp
+ReadWritePaths=/var/lib/tross -/var/lib/tross-dhcp
+# AF_PACKET — копии сообщений DHCP в LAN для реестра устройств.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX AF_PACKET
 LockPersonality=yes
 RestrictRealtime=yes
 

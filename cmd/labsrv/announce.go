@@ -175,3 +175,99 @@ func mdnsd(args []string) error {
 		}
 	}
 }
+
+// dhcpMsg — сообщение клиента DHCP с chaddr hw; extra — опции «код, значение».
+func dhcpMsg(typ byte, hw net.HardwareAddr, xid uint32, hostname string, extra ...[]byte) []byte {
+	b := make([]byte, 240)
+	b[0], b[1], b[2] = 1, 1, 6
+	binary.BigEndian.PutUint32(b[4:8], xid)
+	binary.BigEndian.PutUint16(b[10:12], 0x8000)
+	copy(b[28:34], hw)
+	binary.BigEndian.PutUint32(b[236:240], 0x63825363)
+	b = append(b, 53, 1, typ)
+	if hostname != "" {
+		b = append(append(b, 12, byte(len(hostname))), hostname...)
+	}
+	b = append(append(b, 61, 7, 1), hw...)
+	b = append(b, 55, 3, 1, 3, 6)
+	for _, o := range extra {
+		b = append(b, o...)
+	}
+	return append(b, 255)
+}
+
+// dhcpReply — ответ сервера с xid: тип, выданный адрес, идентификатор сервера.
+func dhcpReply(c *net.UDPConn, xid uint32, deadline time.Time) (typ byte, yi, server netip.Addr, err error) {
+	_ = c.SetReadDeadline(deadline)
+	buf := make([]byte, 1500)
+	for {
+		n, _, err := c.ReadFromUDP(buf)
+		if err != nil {
+			return 0, yi, server, err
+		}
+		b := buf[:n]
+		if n < 240 || b[0] != 2 || binary.BigEndian.Uint32(b[4:8]) != xid {
+			continue
+		}
+		yi = netip.AddrFrom4([4]byte(b[16:20]))
+		for i := 240; i+1 < n && b[i] != 255; {
+			if b[i] == 0 {
+				i++
+				continue
+			}
+			l := int(b[i+1])
+			if i+2+l > n {
+				break
+			}
+			switch v := b[i+2 : i+2+l]; b[i] {
+			case 53:
+				typ = v[0]
+			case 54:
+				if l == 4 {
+					server = netip.AddrFrom4([4]byte(v))
+				}
+			}
+			i += 2 + l
+		}
+		return typ, yi, server, nil
+	}
+}
+
+// dhcpc — клиент DHCP с любым MAC: обмен целиком, печатает выданный адрес.
+//
+//	labsrv dhcpc -mac a6:00:00:00:00:01 -hostname Galaxy-Lab
+func dhcpc(args []string) error {
+	fs := flag.NewFlagSet("dhcpc", flag.ExitOnError)
+	macS := fs.String("mac", "", "client MAC")
+	hostname := fs.String("hostname", "", "DHCP option 12")
+	timeout := fs.Duration("timeout", 5*time.Second, "per step")
+	_ = fs.Parse(args)
+	hw, err := net.ParseMAC(*macS)
+	if err != nil || len(hw) != 6 {
+		return fmt.Errorf("dhcpc: -mac: %v", err)
+	}
+	c, err := net.ListenUDP("udp4", &net.UDPAddr{Port: 68})
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	bcast := &net.UDPAddr{IP: net.IPv4bcast, Port: 67}
+	xid := uint32(time.Now().UnixNano())
+	if _, err := c.WriteToUDP(dhcpMsg(1, hw, xid, *hostname), bcast); err != nil {
+		return err
+	}
+	typ, offered, server, err := dhcpReply(c, xid, time.Now().Add(*timeout))
+	if err != nil || typ != 2 {
+		return fmt.Errorf("dhcpc: no offer: type %d, %v", typ, err)
+	}
+	req := dhcpMsg(3, hw, xid, *hostname, append([]byte{50, 4}, offered.AsSlice()...), append([]byte{54, 4}, server.AsSlice()...))
+	if _, err := c.WriteToUDP(req, bcast); err != nil {
+		return err
+	}
+	typ, got, _, err := dhcpReply(c, xid, time.Now().Add(*timeout))
+	if err != nil || typ != 5 {
+		return fmt.Errorf("dhcpc: no ack: type %d, %v", typ, err)
+	}
+	fmt.Printf("%s %s\n", got, server)
+	return nil
+}

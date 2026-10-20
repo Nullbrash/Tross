@@ -63,6 +63,7 @@ type API struct {
 type LAN struct {
 	Interface string         `yaml:"interface"`
 	Networks  []netip.Prefix `yaml:"networks"`
+	DHCP      DHCP           `yaml:"dhcp"`
 }
 
 type Link struct {

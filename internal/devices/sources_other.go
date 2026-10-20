@@ -19,3 +19,5 @@ func NewSources(SourceOptions) (*Sources, error) {
 func (*Sources) Run(context.Context) {}
 
 func (*Sources) Probe(model.Device) {}
+
+func (*Sources) ProbeDHCP() error { return errors.New("devices: LAN sources need Linux") }

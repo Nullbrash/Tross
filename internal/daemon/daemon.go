@@ -68,9 +68,10 @@ func Run(ctx context.Context, opts Options) error {
 	// получают адреса уже при Setup.
 	var binder *deviceBinder
 	var srcs *devices.Sources
+	var dhcpSvc *dhcpService
 	devSvc, err := devices.New(ctx, devices.Options{
 		Store: st, Bus: bus, Log: log, NotifyNew: *cfg.Devices.NotifyNew,
-		OnChange: func() { binder.changed() },
+		OnChange: func() { binder.changed(); dhcpSvc.changed() },
 		Probe: func(d model.Device) {
 			if srcs != nil {
 				srcs.Probe(d)
@@ -93,11 +94,12 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("dataplane setup: %w", err)
 	}
 	binder.last = binder.binding()
+	dhcpSvc = newDHCPService(cfg, devSvc.Registry(), log, bus)
 	// Слушатели LAN — только на мини-ПК: в «сухом» режиме сеть машины не
 	// трогается (ни сырых сокетов, ни групп multicast).
 	if !cfg.Daemon.DryRun {
 		srcs, err = devices.NewSources(devices.SourceOptions{
-			Interface: cfg.LAN.Interface, Networks: cfg.LAN.Networks, Log: log,
+			Interface: cfg.LAN.Interface, Networks: cfg.LAN.Networks, Log: log, OnServer: dhcpSvc.onServerFunc(),
 			Observe: func(o devices.Observation) {
 				if err := devSvc.Observe(ctx, o); err != nil && !errors.Is(err, devices.ErrTooMany) {
 					log.Debug("devices: observation", "err", err)
@@ -184,6 +186,7 @@ func Run(ctx context.Context, opts Options) error {
 			DNS:             dnsStatus,
 			Lists:           listsAPI,
 			Devices:         &devicesAPI{svc: devSvc, binder: binder, def: cfg.Devices.DefaultDNSMode},
+			DHCP:            dhcpSvc.statusFunc(),
 			AllowedNetworks: cfg.API.AllowedNetworks,
 			Version:         opts.Version,
 			DryRun:          cfg.Daemon.DryRun,
@@ -220,6 +223,9 @@ func Run(ctx context.Context, opts Options) error {
 	wg.Go(func() { binder.run(runCtx) })
 	if srcs != nil {
 		wg.Go(func() { srcs.Run(runCtx) })
+	}
+	if dhcpSvc != nil {
+		wg.Go(func() { dhcpSvc.run(runCtx, devSvc, srcs) })
 	}
 	if dpiSvc != nil {
 		wg.Go(func() { dpiSvc.run(runCtx) })
