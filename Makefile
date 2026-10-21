@@ -44,7 +44,7 @@ vet-linux: export GOOS := linux
 vet-linux: export GOARCH := amd64
 vet-linux:
 	$(GO) vet ./...
-	$(GO) vet -tags integration ./...
+	$(GO) vet -tags integration,extra ./...
 
 # staticcheck v0.8.1 не читает export data Go 1.27 — запускаем его под тулчейном 1.26
 # (go.mod допускает 1.26; при первом запуске go сам скачает этот тулчейн).
@@ -54,7 +54,7 @@ staticcheck:
 	GOTOOLCHAIN=$(LINT_TOOLCHAIN) GOBIN=$(TOOLS) $(GO) install $(STATICCHECK)
 	GOTOOLCHAIN=$(LINT_TOOLCHAIN) $(TOOLS)/staticcheck$(EXE) -f binary ./... > $(TOOLS)/sc-host.bin
 	GOTOOLCHAIN=$(LINT_TOOLCHAIN) GOOS=linux GOARCH=amd64 $(TOOLS)/staticcheck$(EXE) -f binary ./... > $(TOOLS)/sc-linux.bin
-	GOTOOLCHAIN=$(LINT_TOOLCHAIN) GOOS=linux GOARCH=amd64 $(TOOLS)/staticcheck$(EXE) -tags integration -f binary ./... > $(TOOLS)/sc-itest.bin
+	GOTOOLCHAIN=$(LINT_TOOLCHAIN) GOOS=linux GOARCH=amd64 $(TOOLS)/staticcheck$(EXE) -tags integration,extra -f binary ./... > $(TOOLS)/sc-itest.bin
 	GOTOOLCHAIN=$(LINT_TOOLCHAIN) $(TOOLS)/staticcheck$(EXE) -merge $(TOOLS)/sc-host.bin $(TOOLS)/sc-linux.bin $(TOOLS)/sc-itest.bin
 
 fmt:

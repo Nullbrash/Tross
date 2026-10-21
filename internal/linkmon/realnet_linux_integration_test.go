@@ -1,4 +1,4 @@
-//go:build linux && integration
+//go:build linux && integration && extra
 
 package linkmon
 
@@ -12,12 +12,13 @@ import (
 )
 
 // Разовая проверка DoH по умолчанию в настоящей сети: сертификаты серверов
-// должны сходиться с их IP. Только по явному запросу — TROSS_REAL_NET_IFACE
-// (интерфейс с выходом в интернет); три запроса, по одному на сервер.
+// должны сходиться с их IP. Дополнительный тест (признак сборки extra,
+// `scripts/lab-itest extra`): TROSS_REAL_NET_IFACE — интерфейс с выходом в
+// интернет; три запроса, по одному на сервер.
 func TestDefaultDoHRealNetwork(t *testing.T) {
 	iface := os.Getenv("TROSS_REAL_NET_IFACE")
 	if iface == "" {
-		t.Skip("set TROSS_REAL_NET_IFACE to query real DoH servers")
+		t.Fatal("set TROSS_REAL_NET_IFACE to query real DoH servers")
 	}
 	// Те же адреса, что monitor.http_check.dns по умолчанию (internal/config).
 	for _, u := range []string{"https://1.1.1.1/dns-query", "https://8.8.4.4/dns-query", "https://9.9.9.9/dns-query"} {

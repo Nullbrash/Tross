@@ -7,6 +7,8 @@
 #   scripts/lab-sync test       + build + go test ./...
 #   scripts/lab-sync itest [N] [флаги теста]  + build + интеграционные тесты на
 #                               стенде (N прогонов; например -test.run Video)
+#   scripts/lab-sync itest extra  + build + дополнительные тесты (замеры и
+#                               настоящая сеть)
 #
 # Адрес стенда — TROSS_LAB_HOST (и ключ TROSS_LAB_KEY) из окружения или из
 # .lab.env в корне репозитория (файл вне git).

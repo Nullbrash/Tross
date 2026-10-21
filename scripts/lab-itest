@@ -4,8 +4,15 @@
 # от root. Каждый прогон — с чистого `lab-netns up`; в конце проверяется,
 # что настоящая сеть машины не изменилась.
 #
-#   scripts/lab-itest [прогонов=2] [-test.run Regexp]
-#   LAB_MEASURE_OUT=~/lab-results/<дата>-x scripts/lab-itest 1 -test.run Measure   замеры
+#   scripts/lab-itest [прогонов=2] [-test.run Regexp]   диагностические тесты
+#   scripts/lab-itest extra                             дополнительные тесты
+#
+# Дополнительные (признак сборки extra) — не проверка работоспособности, а
+# замеры под нагрузкой и разовые запросы в настоящую сеть: в обычный прогон
+# не входят. Замеры (TestMeasure*) — в закрытом стенде, цифры — в
+# LAB_MEASURE_OUT (по умолчанию ~/lab-results/<дата>-extra); проверка DoH
+# (*RealNetwork) — в сети машины через TROSS_REAL_NET_IFACE (по умолчанию
+# интерфейс маршрута по умолчанию), один раз.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -15,19 +22,39 @@ export PATH=$HOME/sdk/go/bin:$PATH
 exec 9>>/run/lock/tross-lab.lock
 flock -n 9 || { echo "lab-itest: stand is busy — another run holds /run/lock/tross-lab.lock" >&2; exit 3; }
 
-runs=${1:-2}
-shift || true
-extra=("$@")
+mode=diag tags=integration
+if [ "${1:-}" = extra ]; then
+	mode=extra tags=integration,extra
+	shift
+	[ $# = 0 ] || { echo "usage: lab-itest extra" >&2; exit 2; }
+	runs=1
+	extra=(-test.run '^TestMeasure')
+	export LAB_MEASURE_OUT=${LAB_MEASURE_OUT:-$HOME/lab-results/$(date +%F)-extra}
+	mkdir -p "$LAB_MEASURE_OUT"
+	iface=${TROSS_REAL_NET_IFACE:-$(ip -4 route show default | awk '{ print $5; exit }')}
+else
+	runs=${1:-2}
+	shift || true
+	extra=("$@")
+fi
 
 pkgs=$(grep -rl --include='*_integration_test.go' -e '//go:build' . | xargs -r -n1 dirname | sort -u)
 [ -n "$pkgs" ] || { echo "no integration tests"; exit 0; }
 mkdir -p bin/itest
-bins=()
+bins=() realnet=()
 for p in $pkgs; do
 	b="bin/itest/$(echo "${p#./}" | tr / _).test"
-	go test -c -tags integration -o "$b" "$p"
+	go test -c -tags "$tags" -o "$b" "$p"
 	bins+=("$b")
+	# В сети машины запускаются только пакеты с такими тестами.
+	if grep -qE 'func Test[A-Za-z0-9]*RealNetwork\(' "$p"/*_integration_test.go; then realnet+=("$b"); fi
 done
+
+# Итоги — по строкам верхнего уровня `--- PASS/FAIL/SKIP` (подтесты — с
+# отступом и не считаются).
+out=$(mktemp)
+trap 'rm -f "$out"' EXIT
+runbin() { "$@" 2>&1 | tee -a "$out"; return "${PIPESTATUS[0]}"; }
 
 snap() { sudo -n sh -c '{ ip -4 route show table all; ip rule; ip -br link; nft list ruleset; } | md5sum'; }
 before=$(snap)
@@ -43,16 +70,59 @@ for r in $(seq 1 "$runs"); do
 		sudo -n "$lab" up >/dev/null
 	fi
 	for b in "${bins[@]}"; do
-		if ! sudo -n ip netns exec tl-tross env LAB_NETNS="$lab" LAB_MEASURE_OUT="${LAB_MEASURE_OUT:-}" \
+		if ! runbin sudo -n ip netns exec tl-tross env LAB_NETNS="$lab" LAB_MEASURE_OUT="${LAB_MEASURE_OUT:-}" \
 			"$b" -test.v -test.count=1 "${extra[@]}"; then
 			fails=$((fails + 1))
 		fi
 	done
 	sudo -n "$lab" down >/dev/null
 done
+if [ "$mode" = extra ]; then
+	echo "=== real network via ${iface:-?}"
+	for b in "${realnet[@]}"; do
+		if ! runbin sudo -n env TROSS_REAL_NET_IFACE="$iface" "$b" -test.v -test.count=1 -test.run 'RealNetwork$'; then
+			fails=$((fails + 1))
+		fi
+	done
+fi
 after=$(snap)
 if [ "$before" != "$after" ]; then
 	echo "HOST NETWORK CHANGED: $before -> $after"
 	fails=$((fails + 1))
 fi
-if [ "$fails" = 0 ]; then echo "ITEST PASSED ($runs runs)"; else echo "ITEST FAILED: $fails"; exit 1; fi
+
+# plural N тест теста тестов
+plural() {
+	local n=$(($1 % 100))
+	if [ "$n" -ge 11 ] && [ "$n" -le 14 ]; then echo "$4"
+	elif [ $((n % 10)) = 1 ]; then echo "$2"
+	elif [ $((n % 10)) -ge 2 ] && [ $((n % 10)) -le 4 ]; then echo "$3"
+	else echo "$4"; fi
+}
+pass=$(grep -c '^--- PASS' "$out" || true)
+failed=$(grep -c '^--- FAIL' "$out" || true)
+skip=$(grep -c '^--- SKIP' "$out" || true)
+if [ "$mode" = extra ]; then
+	what="$(plural "$pass" дополнительный дополнительных дополнительных) $(plural "$pass" тест теста тестов)"
+else
+	what="$(plural "$pass" диагностический диагностических диагностических) $(plural "$pass" тест теста тестов)"
+fi
+did=$(plural "$pass" прошёл прошли прошли)
+inruns=""
+[ "$runs" -gt 1 ] && inruns=" (прогонов: $runs)"
+# Пропуск здесь — тест, который должен был пройти, но не запустился: об этом
+# — всегда отдельно.
+note=""
+[ "$skip" = 0 ] || note=" Пропущено: $skip — разобраться."
+if [ "$fails" = 0 ] && [ "$failed" = 0 ]; then
+	echo "ITEST PASSED ($runs runs)"
+	if [ "$mode" = extra ]; then
+		echo "$pass $what $did.$note"
+	else
+		echo "$pass $what $did$inruns, проект работает штатно.$note"
+	fi
+else
+	echo "ITEST FAILED: $fails"
+	echo "$pass $what $did$inruns, упало: $failed.$note"
+	exit 1
+fi

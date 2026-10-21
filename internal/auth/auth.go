@@ -84,6 +84,8 @@ const (
 	failWindow  = time.Minute
 	failPerAddr = 5
 	failTotal   = 30
+	// checkWait — сколько попытка ждёт очереди на проверку пароля.
+	checkWait = 10 * time.Second
 )
 
 // Session — проверенная сессия.
@@ -101,10 +103,16 @@ type Service struct {
 	mu    sync.Mutex
 	fails map[string][]time.Time
 	all   []time.Time
+
+	// Проверка пароля берёт 64 МБ (argon2id): по одной за раз, иначе
+	// поток одновременных входов из LAN съест память мини-ПК.
+	checking chan struct{}
+	check    func(hash, pw string) bool
 }
 
 func New(st store.AuthStore) *Service {
-	return &Service{st: st, now: time.Now, fails: map[string][]time.Time{}}
+	return &Service{st: st, now: time.Now, fails: map[string][]time.Time{},
+		checking: make(chan struct{}, 1), check: CheckPassword}
 }
 
 func token() (string, []byte, error) {
@@ -142,29 +150,72 @@ func (s *Service) allowLocked(addr string, now time.Time) bool {
 }
 
 // Login — проверка пароля; удачно — новая сессия (токен для cookie).
+// Попытка засчитывается как неудача до проверки и снимается только при
+// успехе: одновременные запросы не проходят лимит все разом.
 func (s *Service) Login(ctx context.Context, pw, addr, agent string) (string, Session, error) {
 	now := s.now()
 	s.mu.Lock()
 	ok := s.allowLocked(addr, now)
+	if ok {
+		s.fails[addr] = append(s.fails[addr], now)
+		s.all = append(s.all, now)
+	}
 	s.mu.Unlock()
 	if !ok {
 		return "", Session{}, ErrTooMany
 	}
 	hash, err := s.st.PasswordHash(ctx)
+	if err == nil && hash == "" {
+		err = ErrNoPassword
+	}
+	var good bool
+	if err == nil {
+		good, err = s.checkOne(ctx, hash, pw)
+	}
 	if err != nil {
+		s.unreserve(addr, now)
 		return "", Session{}, err
 	}
-	if hash == "" {
-		return "", Session{}, ErrNoPassword
-	}
-	if !CheckPassword(hash, pw) {
-		s.mu.Lock()
-		s.fails[addr] = append(s.fails[addr], now)
-		s.all = append(s.all, now)
-		s.mu.Unlock()
+	if !good {
 		return "", Session{}, ErrBadLogin
 	}
+	s.unreserve(addr, now)
 	return s.Open(ctx, addr, agent)
+}
+
+// checkOne — проверка пароля в очереди по одной; не дождался — ErrTooMany.
+func (s *Service) checkOne(ctx context.Context, hash, pw string) (bool, error) {
+	t := time.NewTimer(checkWait)
+	defer t.Stop()
+	select {
+	case s.checking <- struct{}{}:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-t.C:
+		return false, ErrTooMany
+	}
+	defer func() { <-s.checking }()
+	return s.check(hash, pw), nil
+}
+
+// unreserve снимает засчитанную заранее попытку (успех или проверки не было).
+func (s *Service) unreserve(addr string, at time.Time) {
+	drop := func(ts []time.Time) []time.Time {
+		for i := len(ts) - 1; i >= 0; i-- {
+			if ts[i].Equal(at) {
+				return append(ts[:i], ts[i+1:]...)
+			}
+		}
+		return ts
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.all = drop(s.all)
+	if f := drop(s.fails[addr]); len(f) > 0 {
+		s.fails[addr] = f
+	} else {
+		delete(s.fails, addr)
+	}
 }
 
 // Open — новая сессия без пароля (после ключа доступа).

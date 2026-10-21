@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Полная проверка без make (на Windows — из Git Bash): форматирование, vet
-# под хост, linux и linux+integration, staticcheck (прогоны по ОС
-# объединяются), модульные тесты, сборка под linux и core/ под Android.
+# под хост, linux и linux+integration (вместе с дополнительными тестами —
+# extra), staticcheck (прогоны по ОС объединяются), модульные тесты, сборка
+# под linux и core/ под Android.
 # Интеграционные тесты стенда — отдельно: scripts/lab-sync itest 2.
 #
 #   scripts/check
@@ -21,10 +22,10 @@ step gofmt
 bad=$(gofmt -l .)
 [ -z "$bad" ] || { echo "not formatted:"; echo "$bad"; exit 1; }
 
-step "go vet (host, linux, linux+integration)"
+step "go vet (host, linux, linux+integration+extra)"
 go vet ./...
 GOOS=linux GOARCH=amd64 go vet ./...
-GOOS=linux GOARCH=amd64 go vet -tags integration ./...
+GOOS=linux GOARCH=amd64 go vet -tags integration,extra ./...
 
 step staticcheck
 mkdir -p "$TOOLS"
@@ -33,7 +34,7 @@ mkdir -p "$TOOLS"
 # хосте числится неиспользуемым.
 GOTOOLCHAIN=$LINT_TOOLCHAIN "$SC" -f binary ./... >"$TOOLS/sc-host.bin"
 GOTOOLCHAIN=$LINT_TOOLCHAIN GOOS=linux GOARCH=amd64 "$SC" -f binary ./... >"$TOOLS/sc-linux.bin"
-GOTOOLCHAIN=$LINT_TOOLCHAIN GOOS=linux GOARCH=amd64 "$SC" -tags integration -f binary ./... >"$TOOLS/sc-itest.bin"
+GOTOOLCHAIN=$LINT_TOOLCHAIN GOOS=linux GOARCH=amd64 "$SC" -tags integration,extra -f binary ./... >"$TOOLS/sc-itest.bin"
 GOTOOLCHAIN=$LINT_TOOLCHAIN "$SC" -merge "$TOOLS/sc-host.bin" "$TOOLS/sc-linux.bin" "$TOOLS/sc-itest.bin"
 
 step "go test"

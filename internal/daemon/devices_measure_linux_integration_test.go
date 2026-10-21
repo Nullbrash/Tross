@@ -1,4 +1,4 @@
-//go:build linux && integration
+//go:build linux && integration && extra
 
 // Замер реестра устройств на стенде (только по LAB_MEASURE_OUT): время
 // «подключилось по DHCP → в реестре с адресом», память на устройство,
@@ -54,7 +54,7 @@ func cpuTime() time.Duration {
 func TestMeasureDevices(t *testing.T) {
 	out := os.Getenv("LAB_MEASURE_OUT")
 	if out == "" {
-		t.Skip("set LAB_MEASURE_OUT=<dir> to run the measurement")
+		t.Fatal("set LAB_MEASURE_OUT=<dir> for the measurement output")
 	}
 	dir := "/run/tross-dhcp-measure"
 	_ = os.RemoveAll(dir)

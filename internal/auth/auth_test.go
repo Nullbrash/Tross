@@ -3,7 +3,10 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,5 +105,73 @@ func TestLoginSessionsAndLimits(t *testing.T) {
 	_ = SetPassword(ctx, st, "another long password")
 	if _, err := a.Check(ctx, tok3, ""); !errors.Is(err, ErrNoSession) {
 		t.Error("password change kept the session")
+	}
+}
+
+// Одновременные входы: проверка пароля (64 МБ) — строго по одной, и лимит
+// неудач держится, даже если все запросы пришли разом.
+func TestConcurrentLogins(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name    string
+		addr    func(i int) string
+		wantBad int
+	}{
+		{"one address", func(int) string { return "192.168.10.66" }, failPerAddr},
+		{"many addresses", func(i int) string { return fmt.Sprintf("192.168.11.%d", i) }, failTotal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, st := newAuth(t)
+			if err := SetPassword(ctx, st, "correct horse battery"); err != nil {
+				t.Fatal(err)
+			}
+			var cur, peak atomic.Int32
+			a.check = func(string, string) bool {
+				n := cur.Add(1)
+				for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+				}
+				time.Sleep(5 * time.Millisecond)
+				cur.Add(-1)
+				return false
+			}
+			const n = 60
+			errs := make(chan error, n)
+			var wg sync.WaitGroup
+			for i := range n {
+				wg.Go(func() {
+					_, _, err := a.Login(ctx, "wrong password!!", tc.addr(i), "")
+					errs <- err
+				})
+			}
+			wg.Wait()
+			close(errs)
+			bad, many := 0, 0
+			for err := range errs {
+				switch {
+				case errors.Is(err, ErrBadLogin):
+					bad++
+				case errors.Is(err, ErrTooMany):
+					many++
+				default:
+					t.Errorf("unexpected: %v", err)
+				}
+			}
+			if p := peak.Load(); p != 1 {
+				t.Errorf("password checks at once: %d, want 1", p)
+			}
+			if bad != tc.wantBad || bad+many != n {
+				t.Errorf("checked %d, refused %d; want %d checked", bad, many, tc.wantBad)
+			}
+		})
+	}
+	// Удачный вход не тратит попытку: 10 верных подряд с одного адреса.
+	a, st := newAuth(t)
+	if err := SetPassword(ctx, st, "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 10 {
+		if _, _, err := a.Login(ctx, "correct horse battery", "192.168.10.20", ""); err != nil {
+			t.Fatalf("login %d: %v", i, err)
+		}
 	}
 }
