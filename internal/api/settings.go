@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 )
 
 // Settings — правки интерфейса поверх файла конфигурации.
@@ -12,6 +13,16 @@ type Settings interface {
 	Get(ctx context.Context) (SettingsDoc, error)
 	// Put — новая версия правок поверх version (иначе ErrStale).
 	Put(ctx context.Context, version int64, overlay json.RawMessage) (SettingsDoc, error)
+	Trial(ctx context.Context) (TrialDoc, error)
+	StartTrial(ctx context.Context) (TrialDoc, error)
+	ConfirmTrial(ctx context.Context) (TrialDoc, error)
+}
+
+// TrialDoc — состояние пробного применения; время всегда UTC.
+type TrialDoc struct {
+	Active    bool      `json:"active"`
+	Expires   time.Time `json:"expires_at,omitzero"`
+	Confirmed bool      `json:"confirmed"`
 }
 
 // SettingsDoc — правки, «как в файле» и что действует сейчас.
@@ -20,6 +31,9 @@ type SettingsDoc struct {
 	Overlay json.RawMessage `json:"overlay"`
 	// File — правимые разделы, как в файле (именами полей YAML).
 	File json.RawMessage `json:"file"`
+	// Active — нормализованный набор, которым реально работает демон.
+	// Он нужен интерфейсу для честного diff перед пробным применением.
+	Active json.RawMessage `json:"active"`
 	// Applied — версия правок, с которой работает демон; RestartRequired —
 	// сохранённое вступит в силу после перезапуска.
 	Applied         int64  `json:"applied_version"`
@@ -69,4 +83,31 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		s.opts.Log.Info("api: interface changes saved", "version", d.Version, "addr", clientAddr(r))
 		writeJSON(w, http.StatusOK, d)
 	}
+}
+
+func (s *Server) handleSettingsTrial(w http.ResponseWriter, r *http.Request) {
+	s.settingsTrial(w, r, func(x Settings) (TrialDoc, error) { return x.Trial(r.Context()) })
+}
+func (s *Server) handleSettingsTrialStart(w http.ResponseWriter, r *http.Request) {
+	s.settingsTrial(w, r, func(x Settings) (TrialDoc, error) { return x.StartTrial(r.Context()) })
+}
+func (s *Server) handleSettingsTrialConfirm(w http.ResponseWriter, r *http.Request) {
+	s.settingsTrial(w, r, func(x Settings) (TrialDoc, error) { return x.ConfirmTrial(r.Context()) })
+}
+func (s *Server) settingsTrial(w http.ResponseWriter, _ *http.Request, f func(Settings) (TrialDoc, error)) {
+	if s.opts.Settings == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "settings are not available"})
+		return
+	}
+	d, err := f(s.opts.Settings)
+	var re requestError
+	if errors.As(err, &re) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
 }

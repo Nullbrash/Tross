@@ -22,10 +22,11 @@ import (
 // для ядра: множества правил, режимы DNS, адреса пробросов. Реестр nil —
 // только ссылки по IP (очистка после аварии, тесты).
 type deviceBinder struct {
-	cfg *config.Config
-	reg *coredevices.Registry
-	dp  dataplane.Dataplane
-	log *slog.Logger
+	cfgMu sync.RWMutex
+	cfg   *config.Config
+	reg   *coredevices.Registry
+	dp    dataplane.Dataplane
+	log   *slog.Logger
 
 	kick chan struct{}
 	mu   sync.Mutex
@@ -60,7 +61,10 @@ func (b *deviceBinder) addrs(refs []coredevices.Ref) []netip.Addr {
 // configDNS — устройство с режимом DNS из конфига (тот важнее режима,
 // заданного через API).
 func (b *deviceBinder) configDNS(d model.Device) (model.DNSMode, bool) {
-	for _, cd := range b.cfg.DNS.Devices {
+	b.cfgMu.RLock()
+	cfg := b.cfg
+	b.cfgMu.RUnlock()
+	for _, cd := range cfg.DNS.Devices {
 		r := cd.Address
 		switch {
 		case r.Addr.IsValid() && r.Addr == d.Addr,
@@ -73,8 +77,11 @@ func (b *deviceBinder) configDNS(d model.Device) (model.DNSMode, bool) {
 }
 
 func (b *deviceBinder) binding() dataplane.DeviceBinding {
+	b.cfgMu.RLock()
+	cfg := b.cfg
+	b.cfgMu.RUnlock()
 	out := dataplane.DeviceBinding{Rules: map[dataplane.SetName][]netip.Addr{}, DNS: map[netip.Addr]model.DNSMode{}, Forwards: map[string]netip.Addr{}}
-	for i, r := range b.cfg.Classify.Rules {
+	for i, r := range cfg.Classify.Rules {
 		if len(r.Devices) > 0 {
 			out.Rules[dataplane.DeviceSet(i)] = b.addrs(r.Devices)
 		}
@@ -86,16 +93,24 @@ func (b *deviceBinder) binding() dataplane.DeviceBinding {
 			}
 		}
 	}
-	for _, cd := range b.cfg.DNS.Devices {
+	for _, cd := range cfg.DNS.Devices {
 		if a, ok := b.addr(cd.Address); ok {
 			out.DNS[a] = cd.Mode
 		}
 	}
-	for _, f := range b.cfg.Inbound.Forwards {
+	for _, f := range cfg.Inbound.Forwards {
 		a, _ := b.addr(f.To)
 		out.Forwards[f.Name] = a
 	}
 	return out
+}
+
+// replaceConfig публикует уже проверенную конфигурацию вместе с новым
+// набором правил ядра. Снимок cfg неизменяем после разбора.
+func (b *deviceBinder) replaceConfig(cfg *config.Config) {
+	b.cfgMu.Lock()
+	b.cfg = cfg
+	b.cfgMu.Unlock()
 }
 
 func bindingEqual(x, y dataplane.DeviceBinding) bool {

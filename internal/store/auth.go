@@ -43,6 +43,13 @@ type Overlay struct {
 	Updated time.Time
 }
 
+// ConfigTrial — пробная конфигурация и набор, к которому нужно откатиться.
+type ConfigTrial struct {
+	Previous, Candidate []byte
+	Expires             time.Time
+	Confirmed           bool
+}
+
 // AuthStore — хранение входа и правок интерфейса.
 type AuthStore interface {
 	PasswordHash(ctx context.Context) (string, error)
@@ -60,6 +67,9 @@ type AuthStore interface {
 	Overlay(ctx context.Context) (Overlay, error)
 	// SaveOverlay — новая версия, если текущая — expect (иначе ErrStale).
 	SaveOverlay(ctx context.Context, expect int64, data []byte) (Overlay, error)
+	ConfigTrial(ctx context.Context) (ConfigTrial, error)
+	SaveConfigTrial(ctx context.Context, t ConfigTrial) error
+	DeleteConfigTrial(ctx context.Context) error
 }
 
 var _ AuthStore = (*SQLite)(nil)
@@ -227,4 +237,26 @@ func (s *SQLite) SaveOverlay(ctx context.Context, expect int64, data []byte) (Ov
 		return Overlay{}, err
 	}
 	return o, tx.Commit()
+}
+
+func (s *SQLite) ConfigTrial(ctx context.Context) (ConfigTrial, error) {
+	if err := s.check(); err != nil { return ConfigTrial{}, err }
+	var t ConfigTrial; var until int64; var confirmed int
+	err := s.db.QueryRowContext(ctx, `SELECT previous, candidate, expires, confirmed FROM config_trial WHERE id = 1`).Scan(&t.Previous, &t.Candidate, &until, &confirmed)
+	if errors.Is(err, sql.ErrNoRows) { return ConfigTrial{}, nil }
+	t.Expires, t.Confirmed = time.UnixMilli(until), confirmed != 0
+	return t, err
+}
+
+func (s *SQLite) SaveConfigTrial(ctx context.Context, t ConfigTrial) error {
+	if err := s.check(); err != nil { return err }
+	_, err := s.db.ExecContext(ctx, `INSERT INTO config_trial (id, previous, candidate, expires, confirmed) VALUES (1, ?, ?, ?, ?)
+		ON CONFLICT (id) DO UPDATE SET previous=excluded.previous, candidate=excluded.candidate, expires=excluded.expires, confirmed=excluded.confirmed`, t.Previous, t.Candidate, t.Expires.UnixMilli(), t.Confirmed)
+	return err
+}
+
+func (s *SQLite) DeleteConfigTrial(ctx context.Context) error {
+	if err := s.check(); err != nil { return err }
+	_, err := s.db.ExecContext(ctx, `DELETE FROM config_trial WHERE id = 1`)
+	return err
 }

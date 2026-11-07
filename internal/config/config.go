@@ -370,6 +370,9 @@ type Proxy struct {
 type Devices struct {
 	NotifyNew      *bool         `yaml:"notify_new"`
 	DefaultDNSMode model.DNSMode `yaml:"default_dns_mode"`
+	// RequireApproval — новые устройства до подтверждения получают только
+	// DHCP и DNS Tross; по умолчанию выключено для совместимости.
+	RequireApproval bool `yaml:"require_approval"`
 }
 
 // Load читает, дополняет значениями по умолчанию и проверяет конфигурацию.

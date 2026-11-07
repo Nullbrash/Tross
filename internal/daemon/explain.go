@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"tross/core/classify"
@@ -26,7 +27,8 @@ import (
 // что ядро делает сейчас — план классов и закрепления берутся из ядра и
 // балансировщика, а не из памяти движка (новые соединения он не видит).
 type explainer struct {
-	cls      *classify.Engine
+	mu       sync.RWMutex
+	classify *classifierState
 	eng      *decision.Engine
 	plan     func() []decision.ClassPlan
 	dp       dataplane.Dataplane
@@ -34,7 +36,7 @@ type explainer struct {
 }
 
 func newExplainer(cfg *config.Config, cls *classify.Engine, bal *balancer, dp dataplane.Dataplane) *explainer {
-	return &explainer{cls: cls, eng: bal.engine, plan: bal.applied, dp: dp, policies: cfg.Policies()}
+	return &explainer{classify: newClassifierState(cls), eng: bal.engine, plan: bal.applied, dp: dp, policies: cfg.Policies()}
 }
 
 // newClassifier — тот же классификатор, по которому собраны правила ядра:
@@ -56,11 +58,15 @@ func newClassifier(cfg *config.Config, cat profile.Catalog, domainRules *corelis
 }
 
 func (x *explainer) explain(ctx context.Context, f model.Flow) (api.Explanation, error) {
-	c := x.cls.Classify(f)
+	x.mu.RLock()
+	eng, policies := x.eng, x.policies
+	x.mu.RUnlock()
+	cls := x.classify.get()
+	c := cls.Classify(f)
 	ex := api.Explanation{Flow: f, Classification: c, Notes: inputNotes(f, c)}
-	pol, ok := x.policies[c.Class]
+	pol, ok := policies[c.Class]
 	if !ok {
-		pol = x.policies[model.ClassDefault]
+		pol = policies[model.ClassDefault]
 		ex.Notes = append(ex.Notes, fmt.Sprintf("no policy for class %s: default policy applies", c.Class))
 	}
 	ex.Tin = sqm.TinFor(pol.Priority).String()
@@ -78,7 +84,7 @@ func (x *explainer) explain(ctx context.Context, f model.Flow) (api.Explanation,
 		}
 	}
 
-	if d, err := x.eng.Explain(f, c, nil); err == nil {
+	if d, err := eng.Explain(f, c, nil); err == nil {
 		ex.Method = d.Method
 	} else if !errors.Is(err, decision.ErrNoUsableLink) {
 		return ex, err
@@ -115,6 +121,10 @@ func (x *explainer) explain(ctx context.Context, f model.Flow) (api.Explanation,
 		ex.Reason += fmt.Sprintf("; a new %s pin will hold the link for %s", kind, ttl)
 	}
 	return ex, nil
+}
+
+func (x *explainer) replaceClassifier(cls *classify.Engine) {
+	x.classify.replace(cls)
 }
 
 // pinKind — какое закрепление ставит ядро для класса (как renderPlan).

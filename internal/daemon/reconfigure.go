@@ -1,0 +1,66 @@
+package daemon
+
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"tross/core/classify"
+	corelists "tross/core/lists"
+	"tross/internal/config"
+	"tross/internal/dataplane"
+)
+
+// reconfigurer меняет согласованный набор правил: сначала строит всё в
+// памяти, затем атомарно меняет ядро и лишь после этого потребителей правил.
+type reconfigurer struct {
+	mu       sync.Mutex
+	dp       dataplane.Dataplane
+	binder   *deviceBinder
+	dns      *dnsService
+	explain  *explainer
+	rules    *corelists.Rules
+	classify *classifierState
+}
+
+// classifierState даёт DNS и API один источник правды. Замена указателя
+// происходит после успешной nft-транзакции, поэтому разные потребители не
+// увидят разные наборы пользовательских правил.
+type classifierState struct {
+	mu  sync.RWMutex
+	cls *classify.Engine
+}
+
+func newClassifierState(cls *classify.Engine) *classifierState { return &classifierState{cls: cls} }
+func (s *classifierState) get() *classify.Engine               { s.mu.RLock(); defer s.mu.RUnlock(); return s.cls }
+func (s *classifierState) replace(cls *classify.Engine)        { s.mu.Lock(); s.cls = cls; s.mu.Unlock() }
+
+func (r *reconfigurer) Apply(ctx context.Context, cfg *config.Config) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.binder == nil {
+		return fmt.Errorf("reconfigure: device binder is unavailable")
+	}
+	cat, err := serviceCatalog(cfg)
+	if err != nil {
+		return err
+	}
+	cls, err := newClassifier(cfg, cat, r.rules, r.binder.refs)
+	if err != nil {
+		return err
+	}
+	// Строим привязки кандидатной конфигурации без копирования mutex и без
+	// мутации работающего binder.
+	candidateBinder := &deviceBinder{cfg: cfg, reg: r.binder.reg}
+	spec, err := dataplaneSpec(cfg, candidateBinder)
+	if err != nil {
+		return err
+	}
+	if err := r.dp.ReplaceSpec(ctx, spec); err != nil {
+		return err
+	}
+	r.binder.replaceConfig(cfg)
+	r.binder.changed()
+	r.classify.replace(cls)
+	return nil
+}

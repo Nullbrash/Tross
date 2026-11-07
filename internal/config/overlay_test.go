@@ -22,6 +22,19 @@ func TestOverlay(t *testing.T) {
 	if l.Priority != 5 || l.SQM.DownMbit != 300 || l.SQM.UpMbit != 20 || len(cfg.Inbound.Forwards) != 1 || cfg.Inbound.Forwards[0].Proto != "tcp" {
 		t.Fatalf("merged: %+v %+v", l, cfg.Inbound.Forwards)
 	}
+	// Тот же JSON, который собирает интерфейс: ссылки на устройство и
+	// диапазоны портов остаются строками и проходят строгую проверку файла.
+	o, err = ParseOverlay([]byte(`{"forwards":[{"name":"game","proto":"both","port":"27015-27030","to":"dev-a6aabbccddee","links":["isp1"]}],"classify_rules":[{"name":"pc-game","class":"default","devices":["dev-a6aabbccddee"],"proto":"udp","ports":["27015","27016-27030"]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = ParseWithOverlay(file, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Inbound.Forwards) != 1 || cfg.Inbound.Forwards[0].Port.To != 27030 || len(cfg.Classify.Rules) != 1 || cfg.Classify.Rules[0].Ports[1].To != 27030 {
+		t.Fatalf("web overlay: %+v %+v", cfg.Inbound.Forwards, cfg.Classify.Rules)
+	}
 	// Правки проверяются как файл.
 	for name, doc := range map[string]string{
 		"unknown field":  `{"lnks":{}}`,
@@ -46,7 +59,7 @@ func TestOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 	var m map[string]any
-	if json.Unmarshal(fs, &m) != nil || m["links"] == nil || !strings.Contains(string(fs), `"down_mbit":300`) {
+	if json.Unmarshal(fs, &m) != nil || m["links"] == nil || !strings.Contains(string(fs), `"down_mbit":100`) {
 		t.Errorf("file sections %s", fs)
 	}
 }

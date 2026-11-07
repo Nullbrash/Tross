@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
 	"tross/internal/api"
@@ -97,15 +98,201 @@ func loadOverlay(ctx context.Context, cfg *config.Config, path string, st store.
 	return merged, o.Version, ""
 }
 
+// recoverConfigTrial восстанавливает сохраненный набор до первого чтения
+// overlay. Так перезапуск или авария во время пробы не оставляет кандидата
+// действующим без подтверждения из LAN.
+func recoverConfigTrial(ctx context.Context, st store.AuthStore, log *slog.Logger) error {
+	t, err := st.ConfigTrial(ctx)
+	if err != nil || len(t.Candidate) == 0 {
+		return err
+	}
+	if t.Confirmed {
+		return st.DeleteConfigTrial(ctx)
+	}
+	if _, err := config.ParseOverlay(t.Previous); err != nil {
+		return fmt.Errorf("trial recovery document: %w", err)
+	}
+	o, err := st.Overlay(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := st.SaveOverlay(ctx, o.Version, t.Previous); err != nil {
+		return fmt.Errorf("trial recovery overlay: %w", err)
+	}
+	if err := st.DeleteConfigTrial(ctx); err != nil {
+		return err
+	}
+	log.Warn("interface trial was not confirmed; previous settings restored")
+	return nil
+}
+
 // settingsAPI — правки интерфейса для API.
 type settingsAPI struct {
+	mu      sync.Mutex
 	path    string
 	st      store.AuthStore
 	applied int64
 	err     string
+	// active — снимок проверенных правимых разделов после overlay при старте.
+	active    json.RawMessage
+	apply     func(context.Context, *config.Config) error
+	prepare   func(*config.Config)
+	lifetime  context.Context
+	trialStop chan struct{}
+}
+
+func (s *settingsAPI) Trial(ctx context.Context) (api.TrialDoc, error) {
+	t, err := s.st.ConfigTrial(ctx)
+	return api.TrialDoc{Active: len(t.Candidate) != 0, Expires: t.Expires, Confirmed: t.Confirmed}, err
+}
+
+func (s *settingsAPI) StartTrial(ctx context.Context) (api.TrialDoc, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, err := s.st.ConfigTrial(ctx); err != nil {
+		return api.TrialDoc{}, err
+	} else if len(t.Candidate) != 0 {
+		return api.TrialDoc{}, api.ErrBadRequest(errors.New("interface trial is already active"))
+	}
+	o, err := s.st.Overlay(ctx)
+	if err != nil {
+		return api.TrialDoc{}, err
+	}
+	// Кандидат — нормализованные правимые разделы, а не неразобранный JSON клиента.
+	ov, err := config.ParseOverlay(o.Data)
+	if err != nil {
+		return api.TrialDoc{}, err
+	}
+	cfg, err := config.LoadWithOverlay(s.path, ov)
+	if err != nil {
+		return api.TrialDoc{}, err
+	}
+	s.prepareConfig(cfg)
+	candidate, err := config.FileSections(cfg)
+	if err != nil {
+		return api.TrialDoc{}, err
+	}
+	m := config.TrialManager{Store: s.st}
+	t, err := m.Begin(ctx, s.active, candidate, 90*time.Second)
+	if err != nil {
+		return api.TrialDoc{}, err
+	}
+	if err := s.apply(ctx, cfg); err != nil {
+		_ = s.st.DeleteConfigTrial(ctx)
+		return api.TrialDoc{}, err
+	}
+	s.active, s.applied = candidate, o.Version
+	s.startTimerLocked(t)
+	return api.TrialDoc{Active: true, Expires: t.Expires}, nil
+}
+
+func (s *settingsAPI) ConfirmTrial(ctx context.Context) (api.TrialDoc, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := config.TrialManager{Store: s.st}
+	if err := m.Confirm(ctx); err != nil {
+		return api.TrialDoc{}, err
+	}
+	if err := s.st.DeleteConfigTrial(ctx); err != nil {
+		return api.TrialDoc{}, err
+	}
+	s.stopTimerLocked()
+	return api.TrialDoc{}, nil
+}
+
+func (s *settingsAPI) startTimerLocked(t store.ConfigTrial) {
+	s.stopTimerLocked()
+	stop := make(chan struct{})
+	s.trialStop = stop
+	go func() {
+		d := time.Until(t.Expires)
+		if d < 0 {
+			d = 0
+		}
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			if err := s.rollback(context.Background()); err != nil {
+				// Журнал остаётся: следующий запуск обязательно повторит откат.
+				return
+			}
+		case <-stop:
+		case <-s.done():
+		}
+	}()
+}
+
+func (s *settingsAPI) done() <-chan struct{} {
+	if s.lifetime == nil {
+		return nil
+	}
+	return s.lifetime.Done()
+}
+
+func (s *settingsAPI) stopTimerLocked() {
+	if s.trialStop != nil {
+		close(s.trialStop)
+		s.trialStop = nil
+	}
+}
+
+func (s *settingsAPI) rollback(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, err := s.st.ConfigTrial(ctx)
+	if err != nil || len(t.Candidate) == 0 || t.Confirmed || time.Now().Before(t.Expires) {
+		return err
+	}
+	cfg, err := s.configFromSections(t.Previous)
+	if err != nil {
+		return err
+	}
+	if err := s.apply(ctx, cfg); err != nil {
+		return err
+	}
+	o, err := s.st.Overlay(ctx)
+	if err != nil {
+		return err
+	}
+	o, err = s.st.SaveOverlay(ctx, o.Version, t.Previous)
+	if err != nil {
+		return err
+	}
+	if err := s.st.DeleteConfigTrial(ctx); err != nil {
+		return err
+	}
+	s.active, s.applied = t.Previous, o.Version
+	s.stopTimerLocked()
+	return nil
+}
+
+func (s *settingsAPI) configFromSections(raw []byte) (*config.Config, error) {
+	ov, err := config.ParseOverlay(raw)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.LoadWithOverlay(s.path, ov)
+	if err != nil {
+		return nil, err
+	}
+	s.prepareConfig(cfg)
+	return cfg, nil
+}
+
+func (s *settingsAPI) prepareConfig(cfg *config.Config) {
+	if s.prepare != nil {
+		s.prepare(cfg)
+	}
 }
 
 func (s *settingsAPI) Get(ctx context.Context) (api.SettingsDoc, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getLocked(ctx)
+}
+
+func (s *settingsAPI) getLocked(ctx context.Context) (api.SettingsDoc, error) {
 	o, err := s.st.Overlay(ctx)
 	if err != nil {
 		return api.SettingsDoc{}, err
@@ -119,10 +306,17 @@ func (s *settingsAPI) Get(ctx context.Context) (api.SettingsDoc, error) {
 		return api.SettingsDoc{}, err
 	}
 	return api.SettingsDoc{Version: o.Version, Overlay: json.RawMessage(o.Data), File: fs, Applied: s.applied,
-		RestartRequired: o.Version != s.applied, Error: s.err}, nil
+		Active: s.active, RestartRequired: o.Version != s.applied, Error: s.err}, nil
 }
 
 func (s *settingsAPI) Put(ctx context.Context, version int64, raw json.RawMessage) (api.SettingsDoc, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, err := s.st.ConfigTrial(ctx); err != nil {
+		return api.SettingsDoc{}, err
+	} else if len(t.Candidate) != 0 {
+		return api.SettingsDoc{}, api.ErrBadRequest(errors.New("finish or wait for the active interface trial"))
+	}
 	ov, err := config.ParseOverlay(raw)
 	if err == nil {
 		_, err = config.LoadWithOverlay(s.path, ov)
@@ -140,7 +334,7 @@ func (s *settingsAPI) Put(ctx context.Context, version int64, raw json.RawMessag
 	} else if err != nil {
 		return api.SettingsDoc{}, err
 	}
-	return s.Get(ctx)
+	return s.getLocked(ctx)
 }
 
 // serveHTTP — HTTP: перенаправление на HTTPS и корневой сертификат.

@@ -42,7 +42,7 @@ type dnsService struct {
 	listen   []netip.AddrPort
 	every    time.Duration
 	failures int
-	cls      *classify.Engine
+	classify *classifierState
 	plan     func() []decision.ClassPlan
 	linkIdx  map[model.LinkID]int
 	health   *coredns.Health
@@ -60,7 +60,7 @@ type dnsService struct {
 
 func newDNSService(cfg *config.Config, log *slog.Logger, dp dataplane.Dataplane, bus event.EventBus, spec dataplane.Spec, cat profile.Catalog, cls *classify.Engine, rules *lists.Rules, plan func() []decision.ClassPlan) (*dnsService, error) {
 	s := &dnsService{log: log, dp: dp, bus: bus, every: cfg.DNS.Watchdog.Interval, failures: cfg.DNS.Watchdog.Failures,
-		cls: cls, plan: plan, linkIdx: map[model.LinkID]int{}}
+		classify: newClassifierState(cls), plan: plan, linkIdx: map[model.LinkID]int{}}
 	for _, l := range cfg.DNS.Listen {
 		ap, err := netip.ParseAddrPort(l)
 		if err != nil {
@@ -221,7 +221,8 @@ func (s *dnsService) publish(msg string) {
 // закреплением сервиса — для всего сервиса), весами плана; DNS спрашивается
 // через канал закрепления устройства, если оно есть.
 func (s *dnsService) route(domain string, client netip.Addr) (model.LinkID, dataplane.SetName, bool) {
-	c := s.cls.Classify(model.Flow{Src: netip.AddrPortFrom(client, 0), Domain: domain})
+	cls := s.classify.get()
+	c := cls.Classify(model.Flow{Src: netip.AddrPortFrom(client, 0), Domain: domain})
 	plans := s.plan()
 	var cp decision.ClassPlan
 	for _, p := range plans {
@@ -260,6 +261,11 @@ func (s *dnsService) route(domain string, client netip.Addr) (model.LinkID, data
 		pin = dataplane.DomainLinkSet(s.linkIdx[link])
 	}
 	return query, pin, true
+}
+
+// replaceClassifier переключает правила только после успешной замены ядра.
+func (s *dnsService) replaceClassifier(cls *classify.Engine) {
+	s.classify.replace(cls)
 }
 
 func positive(shares []decision.LinkShare) []decision.LinkShare {

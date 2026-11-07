@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -94,6 +95,9 @@ var migrations = []string{
 	   expires INTEGER NOT NULL, addr TEXT, agent TEXT) WITHOUT ROWID;
 	 CREATE TABLE passkeys (id BLOB PRIMARY KEY, name TEXT NOT NULL, data BLOB NOT NULL, created INTEGER NOT NULL, last INTEGER) WITHOUT ROWID;
 	 CREATE TABLE overlay (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, data BLOB NOT NULL, updated INTEGER NOT NULL);`,
+	// Незавершённая пробная переконфигурация: после перезапуска откатывается.
+	`CREATE TABLE config_trial (id INTEGER PRIMARY KEY CHECK (id = 1), previous BLOB NOT NULL, candidate BLOB NOT NULL,
+	   expires INTEGER NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0);`,
 }
 
 func (s *SQLite) migrate() error {
@@ -305,7 +309,7 @@ func (s *SQLite) Devices(ctx context.Context) ([]model.Device, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []model.Device
+	var out, migrate []model.Device
 	for rows.Next() {
 		var b []byte
 		var d model.Device
@@ -315,9 +319,24 @@ func (s *SQLite) Devices(ctx context.Context) ([]model.Device, error) {
 		if err := json.Unmarshal(b, &d); err != nil {
 			return nil, err
 		}
+		// До фазы 5 поля approved не было: все уже известные пользователю
+		// устройства остаются с прежним полным доступом.
+		if !bytes.Contains(b, []byte(`"approved"`)) {
+			d.Approved = true
+			migrate = append(migrate, d)
+		}
 		out = append(out, d)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if len(migrate) > 0 {
+		if err := s.SaveDevices(ctx, migrate); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func (s *SQLite) SaveRule(ctx context.Context, r model.DomainRule) error {

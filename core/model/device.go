@@ -134,6 +134,9 @@ type Device struct {
 	Hints         DeviceHints `json:"hints"`
 	DNSMode       DNSMode     `json:"dns_mode,omitempty"`
 	UPnP          UPnPLevel   `json:"upnp,omitempty"`
+	// Approved — при включённом контроле доступа устройство может выйти за
+	// пределы DHCP и DNS Tross. Старые записи миграция помечает одобренными.
+	Approved bool `json:"approved"`
 	// UPnPPrograms — программы (по описанию из запроса), которым при
 	// уровне «спрашивать» разрешено «всегда»: любой порт ≥ 1024.
 	UPnPPrograms []string `json:"upnp_programs,omitempty"`

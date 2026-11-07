@@ -68,6 +68,11 @@ func (f *Fake) Setup(_ context.Context, spec Spec) error {
 	return nil
 }
 
+func (f *Fake) ReplaceSpec(_ context.Context, spec Spec) error {
+	f.record("replace-spec", spec.LANInterface)
+	return nil
+}
+
 func (f *Fake) Teardown(context.Context) error {
 	f.record("teardown")
 	return nil

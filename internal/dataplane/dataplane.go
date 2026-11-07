@@ -105,6 +105,9 @@ func DomainLinkSet(i int) SetName { return SetName(fmt.Sprintf("tross_dl%d", i))
 // через основную таблицу маршрутизации и оставшийся masquerade.
 type Dataplane interface {
 	Setup(ctx context.Context, spec Spec) error
+	// ReplaceSpec атомарно заменяет изменяемую через интерфейс nftables-спецификацию.
+	// Топология каналов (интерфейсы, таблицы и метки) обязана остаться прежней.
+	ReplaceSpec(ctx context.Context, spec Spec) error
 	Teardown(ctx context.Context) error
 	// SetBalance задаёт распределение новых соединений из домашней сети по
 	// каналам (вес > 0); пусто — ни одного пригодного канала. Установленные

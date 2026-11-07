@@ -130,6 +130,28 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	return nil
 }
 
+func (s *System) ReplaceSpec(ctx context.Context, next Spec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.up { return errors.New("dataplane: not set up") }
+	if err := validateSpec(next); err != nil { return err }
+	if next.LANInterface != s.spec.LANInterface || len(next.Links) != len(s.spec.Links) {
+		return errors.New("dataplane: interface topology may only change from the config file")
+	}
+	for i, l := range next.Links {
+		old := s.spec.Links[i]
+		if l.Link.ID != old.Link.ID || l.Link.Interface != old.Link.Interface || l.Table != old.Table || l.FwMark != old.FwMark {
+			return errors.New("dataplane: link topology may only change from the config file")
+		}
+	}
+	plan := initialPlan(next.Classify.withDefault(), next.Links, s.routed)
+	// nft -f исполняет весь текст как одну транзакцию: старая таблица остаётся
+	// нетронутой, если новый набор правил не проходит проверку ядра.
+	if err := runNft(ctx, renderNAT(next)+renderDNS(next, s.dnsUp)+renderBase(next)+renderPlan(next.Classify.withDefault(), next.Links, plan)); err != nil { return err }
+	s.spec, s.plan = next, plan
+	return nil
+}
+
 func validateSpec(spec Spec) error {
 	if !validIfname(spec.LANInterface) {
 		return fmt.Errorf("dataplane: bad LAN interface %q", spec.LANInterface)

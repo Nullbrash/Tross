@@ -69,6 +69,11 @@ func Run(ctx context.Context, opts Options) error {
 			return fmt.Errorf("prepare: %w", err)
 		}
 	}
+	if opts.ConfigPath != "" {
+		if err := recoverConfigTrial(ctx, st, log); err != nil {
+			return fmt.Errorf("interface trial recovery: %w", err)
+		}
+	}
 	cfg, applied, overlayErr := loadOverlay(ctx, cfg, opts.ConfigPath, st, log)
 	logs := opts.Logs
 	if logs == nil {
@@ -162,6 +167,7 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("classifier: %w", err)
 	}
 	expl := newExplainer(cfg, cls, bal, dp)
+	reconfig := &reconfigurer{dp: dp, binder: binder, explain: expl, rules: rules, classify: expl.classify}
 	// В «сухом» режиме резолвер не слушает: на машине разработчика сеть
 	// не трогается.
 	var dnsSvc *dnsService
@@ -174,6 +180,8 @@ func Run(ctx context.Context, opts Options) error {
 	var dnsStatus func(context.Context) api.DNSStatus
 	var dpiSvc *dpiService
 	if dnsSvc != nil {
+		dnsSvc.classify = reconfig.classify
+		reconfig.dns = dnsSvc
 		res = dnsSvc.res
 		// Обход без резолвера невозможен: только он знает «домен → адрес».
 		dpiSvc = newDPIService(ctx, cfg, log, bus, st, dp, spec, listsAPI.Manual, dnsSvc.doh)
@@ -191,7 +199,15 @@ func Run(ctx context.Context, opts Options) error {
 	authSvc, passkeys := webAuth(cfg, st, log)
 	var settings api.Settings
 	if opts.ConfigPath != "" {
-		settings = &settingsAPI{path: opts.ConfigPath, st: st, applied: applied, err: overlayErr}
+		active, err := config.FileSections(cfg)
+		if err != nil {
+			return fmt.Errorf("active interface settings: %w", err)
+		}
+		settings = &settingsAPI{path: opts.ConfigPath, st: st, applied: applied, err: overlayErr, active: active,
+			apply: reconfig.Apply, lifetime: ctx, prepare: func(next *config.Config) {
+				next.Daemon.DryRun = cfg.Daemon.DryRun
+				next.SetDataDir(cfg.Daemon.DataDir)
+			}}
 	}
 	var pk api.Passkeys
 	if passkeys != nil {

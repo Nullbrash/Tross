@@ -65,7 +65,7 @@ func dnsRouteBench(t *testing.T, pins []dataplane.Pin) *dnsService {
 		{Class: model.ClassDefault, Shares: two},
 		{Class: model.ClassGaming, Shares: []decision.LinkShare{{Link: "isp1", Weight: 1}}},
 	}
-	return &dnsService{dp: dp, cls: cls, plan: func() []decision.ClassPlan { return plan },
+	return &dnsService{dp: dp, classify: newClassifierState(cls), plan: func() []decision.ClassPlan { return plan },
 		linkIdx: map[model.LinkID]int{"isp1": 0, "isp2": 1, "lte": 2}}
 }
 
