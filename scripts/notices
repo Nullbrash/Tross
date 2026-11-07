@@ -37,5 +37,10 @@ path_of() { if command -v cygpath >/dev/null; then cygpath -u "$1"; else printf 
 			done < <(ls "$dir" | grep -iE '^(LICEN[CS]E|COPYING|NOTICE)')
 			[ "$found" = 1 ] || { echo "notices: no license file in $mod $ver" >&2; exit 1; }
 		done
+	echo
+	echo "================================================================"
+	echo "Browser modules embedded in trossd"
+	echo "================================================================"
+	cat web/dist/vendor/LICENSES.md
 } >"$out"
 echo "written $out"
