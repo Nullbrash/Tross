@@ -39,13 +39,16 @@ type LinkSpec struct {
 
 // Spec — базовая разметка, которую демон ставит при старте.
 type Spec struct {
-	LANInterface string
-	Links        []LinkSpec
+	LANInterface          string
+	RequireDeviceApproval bool
+	Links                 []LinkSpec
 	// Classify — классы и правила классификации; пусто — один класс default.
 	Classify Classify
 	// Forwards — ручные пробросы портов; Guard — их общая защита.
-	Forwards []PortForward
-	Guard    InboundGuard
+	Forwards       []PortForward
+	Guard          InboundGuard
+	AllowedSources []netip.Addr
+	InboundStrict  bool
 	// DNS — перехват DNS домашней сети (резолвер демона, запасной).
 	DNS DNSSpec
 	// DPI — каналы с движком обхода DPI.
@@ -71,6 +74,7 @@ type DeviceBinding struct {
 	// Forwards — адрес устройства проброса по имени; пустой адрес — проброс
 	// не действует. Пробросы без имени здесь не меняются.
 	Forwards map[string]netip.Addr
+	Approved []netip.Addr
 }
 
 func validateBinding(b DeviceBinding) error {
@@ -89,6 +93,11 @@ func validateBinding(b DeviceBinding) error {
 	for name, a := range b.Forwards {
 		if a.IsValid() && !a.Is4() {
 			return fmt.Errorf("dataplane: forward %s: %s is not IPv4", name, a)
+		}
+	}
+	for _, a := range b.Approved {
+		if !a.Is4() {
+			return fmt.Errorf("dataplane: approved device %s is not IPv4", a)
 		}
 	}
 	return nil

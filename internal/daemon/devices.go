@@ -91,6 +91,9 @@ func (b *deviceBinder) binding() dataplane.DeviceBinding {
 			if d.DNSMode != "" && d.Addr.IsValid() {
 				out.DNS[d.Addr] = d.DNSMode
 			}
+			if cfg.Devices.RequireApproval && d.Approved && d.Addr.Is4() {
+				out.Approved = append(out.Approved, d.Addr)
+			}
 		}
 	}
 	for _, cd := range cfg.DNS.Devices {
@@ -102,6 +105,7 @@ func (b *deviceBinder) binding() dataplane.DeviceBinding {
 		a, _ := b.addr(f.To)
 		out.Forwards[f.Name] = a
 	}
+	slices.SortFunc(out.Approved, func(x, y netip.Addr) int { return x.Compare(y) })
 	return out
 }
 
@@ -114,7 +118,7 @@ func (b *deviceBinder) replaceConfig(cfg *config.Config) {
 }
 
 func bindingEqual(x, y dataplane.DeviceBinding) bool {
-	return maps.EqualFunc(x.Rules, y.Rules, slices.Equal) && maps.Equal(x.DNS, y.DNS) && maps.Equal(x.Forwards, y.Forwards)
+	return maps.EqualFunc(x.Rules, y.Rules, slices.Equal) && maps.Equal(x.DNS, y.DNS) && maps.Equal(x.Forwards, y.Forwards) && slices.Equal(x.Approved, y.Approved)
 }
 
 // changed — адреса или режимы устройств поменялись (из реестра).
@@ -221,7 +225,7 @@ func (a *devicesAPI) Update(ctx context.Context, id string, e api.DeviceEdit) (a
 	if _, fixed := a.binder.configDNS(d); fixed && e.DNSMode != nil {
 		return api.Device{}, api.ErrConfigured
 	}
-	d, err := a.svc.Update(ctx, id, coredevices.Edit{Name: e.Name, Type: e.Type, Note: e.Note, DNSMode: e.DNSMode, UPnP: e.UPnP})
+	d, err := a.svc.Update(ctx, id, coredevices.Edit{Name: e.Name, Type: e.Type, Note: e.Note, DNSMode: e.DNSMode, UPnP: e.UPnP, Approved: e.Approved})
 	return a.dto(d), apiErr(err)
 }
 

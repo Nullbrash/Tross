@@ -274,7 +274,7 @@ func (s *Service) Update(ctx context.Context, id string, e coredevices.Edit) (mo
 	if err := s.opts.Store.SaveDevices(ctx, []model.Device{d}); err != nil {
 		return d, err
 	}
-	if d.DNSMode != before.DNSMode {
+	if d.DNSMode != before.DNSMode || d.Approved != before.Approved {
 		s.changed()
 	}
 	return d, nil

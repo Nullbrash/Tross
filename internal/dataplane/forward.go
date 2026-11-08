@@ -36,8 +36,9 @@ type InboundGuard struct {
 }
 
 const (
-	setInRate = "tross_in_rate"
-	setInConn = "tross_in_conn"
+	setInRate    = "tross_in_rate"
+	setInConn    = "tross_in_conn"
+	setInAllowed = "tross_in_allowed"
 	// guardSetSize — предел адресов в множествах защиты: при наплыве с
 	// множества адресов память ядра не растёт без границы.
 	guardSetSize = 65535
@@ -131,6 +132,22 @@ func renderForwardNAT(spec Spec) string {
 	// Срок записи частоты — пока окно «в минуту» ещё может что-то значить.
 	fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tsize %d\n\t\tflags dynamic,timeout\n\t\ttimeout 2m\n\t}\n", setInRate, guardSetSize)
 	fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tsize %d\n\t\tflags dynamic\n\t}\n", setInConn, guardSetSize)
+	if spec.InboundStrict {
+		fmt.Fprintf(&b, "\tset %s { type ipv4_addr", setInAllowed)
+		if len(spec.AllowedSources) != 0 {
+			b.WriteString("; elements = {")
+		}
+		for i, a := range spec.AllowedSources {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(a.String())
+		}
+		if len(spec.AllowedSources) != 0 {
+			b.WriteString(" }")
+		}
+		b.WriteString(" }\n")
+	}
 	// Защита — до DNAT (dstnat - 10): отброшенное не доходит до устройства
 	// и не занимает запись conntrack.
 	b.WriteString("\tchain guard {\n\t\ttype filter hook prerouting priority dstnat - 10; policy accept;\n")
@@ -139,6 +156,9 @@ func renderForwardNAT(spec Spec) string {
 	}
 	b.WriteString("\t}\n")
 	b.WriteString("\tchain inbound {\n")
+	if spec.InboundStrict {
+		fmt.Fprintf(&b, "\t\tip saddr != @%s counter drop\n", setInAllowed)
+	}
 	fmt.Fprintf(&b, "\t\tadd @%s { ip saddr limit rate over %d/minute burst %d packets } counter drop\n", setInRate, g.NewPerMinute, g.Burst)
 	fmt.Fprintf(&b, "\t\tadd @%s { ip saddr ct count over %d } counter drop\n", setInConn, g.MaxConns)
 	b.WriteString("\t}\n")

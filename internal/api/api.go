@@ -62,6 +62,7 @@ type Options struct {
 	Events func() (<-chan event.Event, func())
 	// Settings — правки интерфейса поверх файла; nil — нет.
 	Settings Settings
+	TemporaryForwards TemporaryForwards
 }
 
 type Server struct {
@@ -89,6 +90,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings/trial", s.handleSettingsTrial)
 	mux.HandleFunc("POST /api/settings/trial", s.handleSettingsTrialStart)
 	mux.HandleFunc("POST /api/settings/trial/confirm", s.handleSettingsTrialConfirm)
+	mux.HandleFunc("GET /api/inbound/temporary", s.handleTemporaryForwards)
+	mux.HandleFunc("POST /api/inbound/temporary", s.handleTemporaryForwardOpen)
+	mux.HandleFunc("DELETE /api/inbound/temporary/{id}", s.handleTemporaryForwardClose)
 	s.passkeyRoutes(mux)
 	mux.HandleFunc("GET /api/links", s.handleLinks)
 	mux.HandleFunc("POST /api/links/{id}/speedtest", s.handleSpeedTest)

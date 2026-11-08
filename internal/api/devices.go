@@ -43,11 +43,12 @@ type DeviceDetail struct {
 // DeviceEdit — правка: отсутствующее поле не меняется; пустой тип —
 // вернуть угаданный, пустые режимы — по умолчанию и по профилю.
 type DeviceEdit struct {
-	Name    *string           `json:"name"`
-	Type    *model.DeviceType `json:"type"`
-	Note    *string           `json:"note"`
-	DNSMode *model.DNSMode    `json:"dns_mode"`
-	UPnP    *model.UPnPLevel  `json:"upnp"`
+	Name     *string           `json:"name"`
+	Type     *model.DeviceType `json:"type"`
+	Note     *string           `json:"note"`
+	DNSMode  *model.DNSMode    `json:"dns_mode"`
+	UPnP     *model.UPnPLevel  `json:"upnp"`
+	Approved *bool             `json:"approved"`
 }
 
 var (

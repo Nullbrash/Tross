@@ -167,7 +167,8 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("classifier: %w", err)
 	}
 	expl := newExplainer(cfg, cls, bal, dp)
-	reconfig := &reconfigurer{dp: dp, binder: binder, explain: expl, rules: rules, classify: expl.classify}
+	reconfig := &reconfigurer{dp: dp, binder: binder, explain: expl, rules: rules, classify: expl.classify, spec: spec}
+	temporary := newTemporaryForwards(dp, reconfig)
 	// В «сухом» режиме резолвер не слушает: на машине разработчика сеть
 	// не трогается.
 	var dnsSvc *dnsService
@@ -235,6 +236,7 @@ func Run(ctx context.Context, opts Options) error {
 		Passkeys:        pk,
 		CAPEM:           ca.CAPEM,
 		Settings:        settings,
+		TemporaryForwards: temporary,
 		Events:          func() (<-chan event.Event, func()) { return bus.Subscribe(64, event.JournalTopics()...) },
 	})
 	srv := &http.Server{
@@ -283,6 +285,7 @@ func Run(ctx context.Context, opts Options) error {
 		wg.Go(func() { dpiSvc.run(runCtx) })
 	}
 	wg.Go(func() { dbg.run(runCtx) })
+	wg.Go(func() { temporary.run(runCtx) })
 	if !cfg.Daemon.DryRun && cfg.Daemon.Control != "" {
 		// Команды root (отладочный журнал DNS) — только через этот сокет,
 		// не по сети; без него демон работает, но отладки нет.
@@ -439,7 +442,10 @@ func httpCheckOptions(h config.HTTPCheck) linkmon.HTTPCheckOptions {
 // binder (nil — только ссылки по IP).
 func dataplaneSpec(cfg *config.Config, binder *deviceBinder) (dataplane.Spec, error) {
 	spec := dataplane.Spec{
-		LANInterface: cfg.LAN.Interface,
+		LANInterface:          cfg.LAN.Interface,
+		RequireDeviceApproval: cfg.Devices.RequireApproval,
+		AllowedSources:        slices.Clone(cfg.Inbound.AllowedSources),
+		InboundStrict:         *cfg.Inbound.Strict,
 	}
 	for _, l := range cfg.Links {
 		spec.Links = append(spec.Links, dataplane.LinkSpec{

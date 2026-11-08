@@ -166,6 +166,13 @@ func (s *System) SetDevices(ctx context.Context, b DeviceBinding) error {
 			s.spec.Forwards = fw
 		}
 	}
+	if s.spec.RequireDeviceApproval && !slices.Equal(b.Approved, s.approved) {
+		if err := runNft(ctx, renderAccess(s.spec, b.Approved)); err != nil {
+			errs = append(errs, err)
+		} else {
+			s.approved = slices.Clone(b.Approved)
+		}
+	}
 	return errors.Join(errs...)
 }
 

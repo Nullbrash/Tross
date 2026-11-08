@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 
 	"go.yaml.in/yaml/v3"
@@ -21,6 +22,16 @@ type Overlay struct {
 	// Forwards и ClassifyRules — заменяют разделы файла целиком.
 	Forwards      *[]PortForward  `yaml:"forwards,omitempty"`
 	ClassifyRules *[]ClassifyRule `yaml:"classify_rules,omitempty"`
+	InboundAccess *InboundAccess  `yaml:"inbound_access,omitempty"`
+	DeviceAccess  *DeviceAccess   `yaml:"device_access,omitempty"`
+}
+
+type InboundAccess struct {
+	Strict         *bool         `yaml:"strict,omitempty"`
+	AllowedSources *[]netip.Addr `yaml:"allowed_sources,omitempty"`
+}
+type DeviceAccess struct {
+	RequireApproval *bool `yaml:"require_approval,omitempty"`
 }
 
 type LinkOverlay struct {
@@ -31,7 +42,7 @@ type LinkOverlay struct {
 
 // Empty — правок нет.
 func (o Overlay) Empty() bool {
-	return len(o.Links) == 0 && o.Forwards == nil && o.ClassifyRules == nil
+	return len(o.Links) == 0 && o.Forwards == nil && o.ClassifyRules == nil && o.InboundAccess == nil && o.DeviceAccess == nil
 }
 
 // ParseOverlay — строгий разбор документа правок.
@@ -76,6 +87,17 @@ func (o Overlay) apply(c *Config) error {
 	if o.ClassifyRules != nil {
 		c.Classify.Rules = *o.ClassifyRules
 	}
+	if o.InboundAccess != nil {
+		if o.InboundAccess.Strict != nil {
+			c.Inbound.Strict = o.InboundAccess.Strict
+		}
+		if o.InboundAccess.AllowedSources != nil {
+			c.Inbound.AllowedSources = *o.InboundAccess.AllowedSources
+		}
+	}
+	if o.DeviceAccess != nil && o.DeviceAccess.RequireApproval != nil {
+		c.Devices.RequireApproval = *o.DeviceAccess.RequireApproval
+	}
 	return nil
 }
 
@@ -118,8 +140,9 @@ func FileSections(c *Config) (json.RawMessage, error) {
 		p, d, u := l.Priority, l.SQM.DownMbit, l.SQM.UpMbit
 		links[l.ID] = LinkOverlay{Priority: &p, DownMbit: &d, UpMbit: &u}
 	}
-	f, r := c.Inbound.Forwards, c.Classify.Rules
-	return ToJSON(Overlay{Links: links, Forwards: &f, ClassifyRules: &r})
+	f, r, a := c.Inbound.Forwards, c.Classify.Rules, c.Inbound.AllowedSources
+	strict, approval := *c.Inbound.Strict, c.Devices.RequireApproval
+	return ToJSON(Overlay{Links: links, Forwards: &f, ClassifyRules: &r, InboundAccess: &InboundAccess{Strict: &strict, AllowedSources: &a}, DeviceAccess: &DeviceAccess{RequireApproval: &approval}})
 }
 
 // ToJSON — значение с тегами yaml в JSON с теми же именами полей.

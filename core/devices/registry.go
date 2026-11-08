@@ -159,11 +159,12 @@ const OnlineWindow = 10 * time.Minute
 
 // Edit — правки пользователя; nil — поле не меняется.
 type Edit struct {
-	Name    *string
-	Type    *model.DeviceType
-	Note    *string
-	DNSMode *model.DNSMode
-	UPnP    *model.UPnPLevel
+	Name     *string
+	Type     *model.DeviceType
+	Note     *string
+	DNSMode  *model.DNSMode
+	UPnP     *model.UPnPLevel
+	Approved *bool
 }
 
 // Update применяет правки. Тип, заданный пользователем, — подтверждённый;
@@ -202,6 +203,9 @@ func (r *Registry) Update(id string, e Edit) (model.Device, error) {
 	}
 	if e.UPnP != nil {
 		d.UPnP = *e.UPnP
+	}
+	if e.Approved != nil {
+		d.Approved = *e.Approved
 	}
 	return clone(d), nil
 }

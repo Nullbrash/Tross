@@ -122,7 +122,7 @@ func (f *Fake) SetDevices(_ context.Context, b DeviceBinding) error {
 	f.mu.Lock()
 	f.binding = b
 	f.mu.Unlock()
-	f.record("set-devices", len(b.Rules), len(b.DNS), len(b.Forwards))
+	f.record("set-devices", len(b.Rules), len(b.DNS), len(b.Forwards), len(b.Approved))
 	return nil
 }
 

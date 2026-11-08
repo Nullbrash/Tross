@@ -261,6 +261,9 @@ classify:
 # Из домашней сети по внешнему адресу — не работает (обращайтесь по адресу
 # устройства в LAN).
 inbound:
+  # По умолчанию порт открыт только указанным источникам; прочее молча drop.
+  strict: true
+  allowed_sources: []
   forwards: []
   #  - name: minecraft
   #    proto: tcp                # tcp | udp | both; по умолчанию tcp
@@ -439,6 +442,8 @@ upnp:
 # через API (/api/devices). Смена случайного MAC: Tross только предлагает
 # «похоже на…», объединяет пользователь.
 devices:
+  # Новые устройства до одобрения по MAC получают только DHCP и DNS Tross.
+  require_approval: false
   notify_new: true                  # событие device.new о новом устройстве
   # Обычный DNS (53) устройств на чужие серверы: redirect — к резолверу
   # Tross; observe — не трогать; block — отбросить (и DoT); exempt — не

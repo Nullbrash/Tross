@@ -14,13 +14,15 @@ import (
 // reconfigurer меняет согласованный набор правил: сначала строит всё в
 // памяти, затем атомарно меняет ядро и лишь после этого потребителей правил.
 type reconfigurer struct {
-	mu       sync.Mutex
-	dp       dataplane.Dataplane
-	binder   *deviceBinder
-	dns      *dnsService
-	explain  *explainer
-	rules    *corelists.Rules
-	classify *classifierState
+	mu        sync.Mutex
+	dp        dataplane.Dataplane
+	binder    *deviceBinder
+	dns       *dnsService
+	explain   *explainer
+	rules     *corelists.Rules
+	classify  *classifierState
+	spec      dataplane.Spec
+	temporary []dataplane.PortForward
 }
 
 // classifierState даёт DNS и API один источник правды. Замена указателя
@@ -56,11 +58,31 @@ func (r *reconfigurer) Apply(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	spec.Forwards = append(spec.Forwards, r.temporary...)
 	if err := r.dp.ReplaceSpec(ctx, spec); err != nil {
 		return err
 	}
+	r.spec = spec
 	r.binder.replaceConfig(cfg)
 	r.binder.changed()
 	r.classify.replace(cls)
+	return nil
+}
+
+// setTemporaryForwards заменяет только краткоживущие пробросы. Они не
+// записываются в конфигурацию: после перезапуска порт остаётся закрытым.
+func (r *reconfigurer) setTemporaryForwards(ctx context.Context, forwards []dataplane.PortForward) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next := r.spec
+	base := len(next.Forwards) - len(r.temporary)
+	if base < 0 {
+		return fmt.Errorf("reconfigure: temporary forward state is inconsistent")
+	}
+	next.Forwards = append(append([]dataplane.PortForward{}, next.Forwards[:base]...), forwards...)
+	if err := r.dp.ReplaceSpec(ctx, next); err != nil {
+		return err
+	}
+	r.spec, r.temporary = next, append([]dataplane.PortForward{}, forwards...)
 	return nil
 }

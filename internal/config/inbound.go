@@ -15,6 +15,10 @@ import (
 type Inbound struct {
 	Forwards []PortForward `yaml:"forwards"`
 	Guard    InboundGuard  `yaml:"guard"`
+	// AllowedSources — внешние IPv4, которым разрешены ручные пробросы.
+	// Пустой список в строгом режиме означает «не открывать никому».
+	AllowedSources []netip.Addr `yaml:"allowed_sources"`
+	Strict         *bool        `yaml:"strict"`
 }
 
 type PortForward struct {
@@ -49,6 +53,10 @@ type InboundGuard struct {
 }
 
 func (c *Config) applyInboundDefaults() {
+	if c.Inbound.Strict == nil {
+		v := true
+		c.Inbound.Strict = &v
+	}
 	for i := range c.Inbound.Forwards {
 		orDefault(&c.Inbound.Forwards[i].Proto, "tcp")
 	}
@@ -59,6 +67,11 @@ func (c *Config) applyInboundDefaults() {
 }
 
 func (c *Config) validateInbound(p *problems) {
+	for i, a := range c.Inbound.AllowedSources {
+		if !a.Is4() {
+			p.add(fmt.Sprintf("inbound.allowed_sources[%d]", i), "must be IPv4")
+		}
+	}
 	names := map[string]bool{}
 	for i, f := range c.Inbound.Forwards {
 		fp := fmt.Sprintf("inbound.forwards[%d]", i)

@@ -40,7 +40,8 @@ type System struct {
 	prevSVM string // src_valid_mark до Setup — вернуть при Teardown
 	dnsUp   bool   // перехват DNS — на резолвер демона (SetDNS)
 	// devSets — содержимое множеств устройств правил, как оно стоит в ядре.
-	devSets map[SetName][]netip.Addr
+	devSets  map[SetName][]netip.Addr
+	approved []netip.Addr
 }
 
 var _ Dataplane = (*System)(nil)
@@ -107,6 +108,7 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	s.plan = initialPlan(c, spec.Links, s.routed)
 	s.dnsUp = false
 	s.devSets = map[SetName][]netip.Addr{}
+	s.approved = nil
 	for _, r := range spec.Classify.Rules {
 		if r.SourceSet != "" {
 			s.devSets[r.SourceSet] = slices.Clone(r.Sources)
@@ -114,7 +116,7 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 	}
 	// Перехват DNS — пока на запасной резолвер: резолвер демона ещё не
 	// слушает, на него переключит SetDNS.
-	if err := runNft(ctx, renderNAT(spec)+renderUPnP(spec)+renderDNS(spec, false)+renderBase(spec)+renderPlan(c, spec.Links, s.plan)); err != nil {
+	if err := runNft(ctx, renderNAT(spec)+renderUPnP(spec)+renderDNS(spec, false)+renderAccess(spec, nil)+renderBase(spec)+renderPlan(c, spec.Links, s.plan)); err != nil {
 		return fail(err)
 	}
 	// Очереди — качество, а не связь: без них сеть работает, поэтому ошибка
@@ -133,8 +135,12 @@ func (s *System) Setup(ctx context.Context, spec Spec) error {
 func (s *System) ReplaceSpec(ctx context.Context, next Spec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.up { return errors.New("dataplane: not set up") }
-	if err := validateSpec(next); err != nil { return err }
+	if !s.up {
+		return errors.New("dataplane: not set up")
+	}
+	if err := validateSpec(next); err != nil {
+		return err
+	}
 	if next.LANInterface != s.spec.LANInterface || len(next.Links) != len(s.spec.Links) {
 		return errors.New("dataplane: interface topology may only change from the config file")
 	}
@@ -147,7 +153,9 @@ func (s *System) ReplaceSpec(ctx context.Context, next Spec) error {
 	plan := initialPlan(next.Classify.withDefault(), next.Links, s.routed)
 	// nft -f исполняет весь текст как одну транзакцию: старая таблица остаётся
 	// нетронутой, если новый набор правил не проходит проверку ядра.
-	if err := runNft(ctx, renderNAT(next)+renderDNS(next, s.dnsUp)+renderBase(next)+renderPlan(next.Classify.withDefault(), next.Links, plan)); err != nil { return err }
+	if err := runNft(ctx, renderNAT(next)+renderDNS(next, s.dnsUp)+renderAccess(next, s.approved)+renderBase(next)+renderPlan(next.Classify.withDefault(), next.Links, plan)); err != nil {
+		return err
+	}
 	s.spec, s.plan = next, plan
 	return nil
 }
