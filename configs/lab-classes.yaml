@@ -63,6 +63,9 @@ classify:
     - { name: lab-broadcast, class: broadcast, proto: tcp, ports: ["89"], networks: [203.0.113.100/32] }
 
 inbound:
+  # В тестовой сети внешний клиент tl-inet и проверки от провайдеров
+  # приходят только с этих адресов.
+  allowed_sources: [198.18.1.2, 198.18.2.2, 100.64.1.1, 100.64.2.1]
   forwards:
     - { name: lab-server, proto: both, port: 25565, to: 192.168.77.10 }
 

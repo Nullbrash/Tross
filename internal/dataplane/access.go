@@ -16,7 +16,7 @@ func renderAccess(spec Spec, approved []netip.Addr) string {
 	if !spec.RequireDeviceApproval {
 		return b.String()
 	}
-	fmt.Fprintf(&b, "table inet %s {\n\tset approved4 { type ipv4_addr", nftAccessTable)
+	fmt.Fprintf(&b, "table inet %s {\n\tset approved4 { type ipv4_addr;", nftAccessTable)
 	if len(approved) != 0 {
 		b.WriteString("; elements = {")
 	}

@@ -133,7 +133,7 @@ func renderForwardNAT(spec Spec) string {
 	fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tsize %d\n\t\tflags dynamic,timeout\n\t\ttimeout 2m\n\t}\n", setInRate, guardSetSize)
 	fmt.Fprintf(&b, "\tset %s {\n\t\ttype ipv4_addr\n\t\tsize %d\n\t\tflags dynamic\n\t}\n", setInConn, guardSetSize)
 	if spec.InboundStrict {
-		fmt.Fprintf(&b, "\tset %s { type ipv4_addr", setInAllowed)
+		fmt.Fprintf(&b, "\tset %s { type ipv4_addr;", setInAllowed)
 		if len(spec.AllowedSources) != 0 {
 			b.WriteString("; elements = {")
 		}
