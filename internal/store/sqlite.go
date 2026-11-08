@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"math"
 	"net/netip"
+	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -38,7 +40,10 @@ func Open(path string, ret Retention) (*SQLite, error) {
 	if path != "" {
 		// WAL + synchronous=NORMAL: запись без fsync на каждую транзакцию —
 		// меньше износ SSD; при сбое питания теряется только последняя пачка.
-		dsn = "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+		// SQLite URI не понимает Windows-разделители и спецсимволы пути:
+		// без экранирования временная БД в sandbox могла не открыться.
+		u := &url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(path)}
+		dsn = u.String() + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 	}
 	db, err := sql.Open("sqlite", dsn+sep(dsn)+"_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -98,6 +103,15 @@ var migrations = []string{
 	// Незавершённая пробная переконфигурация: после перезапуска откатывается.
 	`CREATE TABLE config_trial (id INTEGER PRIMARY KEY CHECK (id = 1), previous BLOB NOT NULL, candidate BLOB NOT NULL,
 	   expires INTEGER NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0);`,
+	// Политика proxy-egress: только метаданные списков и явно созданные
+	// правила; ключи прокси и параметры URL сюда не попадают.
+	`CREATE TABLE policy_list_versions (source TEXT PRIMARY KEY, version TEXT NOT NULL, sha256 TEXT NOT NULL, checked INTEGER NOT NULL) WITHOUT ROWID;
+	 CREATE TABLE policy_exceptions (id TEXT PRIMARY KEY, data BLOB NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL) WITHOUT ROWID;
+	 CREATE INDEX policy_exceptions_expires ON policy_exceptions (expires);
+	 CREATE TABLE policy_drafts (token TEXT PRIMARY KEY, data BLOB NOT NULL, expires INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
+	 CREATE INDEX policy_drafts_expires ON policy_drafts (expires);
+	 CREATE TABLE policy_audit (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, topic TEXT NOT NULL, data BLOB NOT NULL);
+	 CREATE INDEX policy_audit_at ON policy_audit (at);`,
 }
 
 func (s *SQLite) migrate() error {
